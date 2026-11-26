@@ -1,0 +1,414 @@
+Export cedarc's decoded frames as dmabuf
+
+CedarC's decoders allocate their own frames and hand out an 88 byte
+descriptor per output buffer, holding the frame's dmabuf fd. Reuse the
+upstream dmabuf export path (so far Zynq only) for it: the output pool
+wraps a dup of that fd, so frames go downstream without a copy. The copy
+fallback without our pool reads the frame through the descriptor. The
+frames are padded (720p is 736 lines), the caps take the visible size from
+the output crop. CPU consumers map a frame once rather than once per plane,
+each dmabuf map syncs the whole frame.
+Selected with the cedarc-dmabuf-output hack, only in CedarC's default
+buffer mode.
+
+Upstream-Status: Inappropriate [vendor specific]
+
+---
+diff --git a/omx/gstomx.c b/omx/gstomx.c
+index 8aeb99b..633aac8 100644
+--- a/omx/gstomx.c
++++ b/omx/gstomx.c
+@@ -3451,11 +3451,24 @@ gst_omx_port_set_dmabuf (GstOMXPort * port, gboolean dmabuf)
+ 
+   return TRUE;
+ #else
++  /* cedarc's output buffers always carry a dmabuf, nothing to configure */
++  if (gst_omx_port_is_cedarc_dmabuf (port))
++    return dmabuf;
++
+   /* dmabuf not supported for this platform */
+   return FALSE;
+ #endif
+ }
+ 
++gboolean
++gst_omx_port_is_cedarc_dmabuf (GstOMXPort * port)
++{
++  return (port->comp->hacks & GST_OMX_HACK_CEDARC_DMABUF_OUTPUT) &&
++      port->port_def.eDir == OMX_DirOutput &&
++      !g_getenv ("NONE_ZERO_COPY_MODE") && !g_getenv ("RAW_ZERO_COPY_MODE") &&
++      !g_getenv ("META_RAW_ZERO_COPY_MODE");
++}
++
+ gboolean
+ gst_omx_port_set_subframe (GstOMXPort * port, gboolean enabled)
+ {
+@@ -3833,6 +3846,8 @@ gst_omx_parse_hacks (gchar ** hacks)
+       hacks_flags |= GST_OMX_HACK_PASS_COLOR_FORMAT_TO_DECODER;
+     else if (g_str_equal (*hacks, "ensure-buffer-count-actual"))
+       hacks_flags |= GST_OMX_HACK_ENSURE_BUFFER_COUNT_ACTUAL;
++    else if (g_str_equal (*hacks, "cedarc-dmabuf-output"))
++      hacks_flags |= GST_OMX_HACK_CEDARC_DMABUF_OUTPUT;
+     else
+       GST_WARNING ("Unknown hack: %s", *hacks);
+     hacks++;
+diff --git a/omx/gstomx.h b/omx/gstomx.h
+index 6862463..e61c34d 100644
+--- a/omx/gstomx.h
++++ b/omx/gstomx.h
+@@ -207,6 +207,34 @@ G_BEGIN_DECLS
+  */
+ #define GST_OMX_HACK_ENSURE_BUFFER_COUNT_ACTUAL          G_GUINT64_CONSTANT (0x0000000000002000)
+ 
++/* Allwinner CedarC: the decoders allocate their own frames and every output
++ * buffer is a descriptor (GstOMXCedarcFrame) pointing at one of them. Export
++ * the frame's dmabuf downstream instead of the descriptor. Only in CedarC's
++ * default buffer mode, the *_ZERO_COPY_MODE environment variables pick others.
++ */
++#define GST_OMX_HACK_CEDARC_DMABUF_OUTPUT                G_GUINT64_CONSTANT (0x0000000000004000)
++
++/* CedarC's output buffer descriptor (OmxPrivateBuffer) */
++typedef struct {
++  guint64 id;
++  guint32 flags;
++  guint8 *phy_y;
++  guint8 *phy_c;
++  guint8 *vir_y;
++  guint8 *vir_c;
++  gint32 crop;
++  gint32 left;
++  gint32 top;
++  gint32 width;
++  gint32 height;
++  gint32 dmabuf_fd;
++  gint32 size;
++  gpointer client_data;
++} GstOMXCedarcFrame;
++
++G_STATIC_ASSERT (sizeof (GstOMXCedarcFrame) == 88);
++G_STATIC_ASSERT (G_STRUCT_OFFSET (GstOMXCedarcFrame, dmabuf_fd) == 68);
++
+ typedef struct _GstOMXCore GstOMXCore;
+ typedef struct _GstOMXPort GstOMXPort;
+ typedef enum _GstOMXPortDirection GstOMXPortDirection;
+@@ -472,6 +500,7 @@ gboolean          gst_omx_port_ensure_buffer_count_actual (GstOMXPort * port, gu
+ gboolean          gst_omx_port_update_buffer_count_actual (GstOMXPort * port, guint nb);
+ 
+ gboolean          gst_omx_port_set_dmabuf (GstOMXPort * port, gboolean dmabuf);
++gboolean          gst_omx_port_is_cedarc_dmabuf (GstOMXPort * port);
+ gboolean          gst_omx_port_set_subframe (GstOMXPort * port, gboolean enabled);
+ gboolean          gst_omx_port_get_subframe (GstOMXPort * port);
+ 
+diff --git a/omx/gstomxallocator.c b/omx/gstomxallocator.c
+index a180669..19de988 100644
+--- a/omx/gstomxallocator.c
++++ b/omx/gstomxallocator.c
+@@ -24,6 +24,7 @@
+ 
+ #include "gstomxallocator.h"
+ #include <gst/allocators/gstdmabuf.h>
++#include <unistd.h>
+ 
+ GST_DEBUG_CATEGORY_STATIC (gst_omx_allocator_debug_category);
+ #define GST_CAT_DEFAULT gst_omx_allocator_debug_category
+@@ -495,9 +496,27 @@ gst_omx_allocator_allocate (GstOMXAllocator * allocator, gint index,
+     case GST_OMX_ALLOCATOR_FOREIGN_MEM_DMABUF:
+     {
+       gint fd = GPOINTER_TO_INT (omx_buf->omx_buf->pBuffer);
++      gsize size = omx_buf->omx_buf->nAllocLen;
++
++      if (gst_omx_port_is_cedarc_dmabuf (allocator->port)) {
++        GstOMXCedarcFrame *frame = (GstOMXCedarcFrame *) omx_buf->omx_buf->pBuffer;
++
++        /* cedarc keeps its fd and frees the frame itself, this memory holds its own */
++        fd = dup (frame->dmabuf_fd);
++        if (frame->size > 0)
++          size = frame->size;
++        if (fd < 0) {
++          GST_ERROR_OBJECT (allocator, "Failed to dup cedarc's dmabuf fd %d",
++              frame->dmabuf_fd);
++          gst_memory_unref (GST_MEMORY_CAST (mem));
++          return NULL;
++        }
++      }
++      /* cedarc's frames get mapped by every cpu consumer, keep the mapping */
+       mem->foreign_mem =
+-          gst_dmabuf_allocator_alloc (allocator->foreign_allocator, fd,
+-          omx_buf->omx_buf->nAllocLen);
++          gst_dmabuf_allocator_alloc_with_flags (allocator->foreign_allocator,
++          fd, size, gst_omx_port_is_cedarc_dmabuf (allocator->port) ?
++          GST_FD_MEMORY_FLAG_KEEP_MAPPED : GST_FD_MEMORY_FLAG_NONE);
+       gst_mini_object_set_qdata (GST_MINI_OBJECT (mem->foreign_mem),
+           GST_OMX_MEMORY_QUARK, mem, NULL);
+       install_mem_dispose (mem);
+diff --git a/omx/gstomxbufferpool.c b/omx/gstomxbufferpool.c
+index b0a60eb..820d5b0 100644
+--- a/omx/gstomxbufferpool.c
++++ b/omx/gstomxbufferpool.c
+@@ -305,6 +305,78 @@ wrong_video_caps:
+   }
+ }
+ 
++/* every plane of a cedarc frame lives in one dmabuf and each map syncs all of
++ * it, so map it once per frame and hand the planes pointers into that */
++typedef struct
++{
++  GMutex lock;
++  guint count;
++  GstMapInfo map;
++} GstOMXCedarcFrameMap;
++
++static GQuark cedarc_frame_map_quark;
++
++static void
++cedarc_frame_map_free (gpointer data)
++{
++  GstOMXCedarcFrameMap *fmap = data;
++
++  g_mutex_clear (&fmap->lock);
++  g_free (fmap);
++}
++
++static gboolean
++cedarc_frame_meta_map (GstVideoMeta * meta, guint plane, GstMapInfo * info,
++    gpointer * data, gint * stride, GstMapFlags flags)
++{
++  GstOMXCedarcFrameMap *fmap = gst_mini_object_get_qdata (GST_MINI_OBJECT
++      (meta->buffer), cedarc_frame_map_quark);
++  gboolean shared = FALSE;
++
++  if (fmap) {
++    g_mutex_lock (&fmap->lock);
++    if (fmap->count == 0 && gst_buffer_map (meta->buffer, &fmap->map, flags))
++      shared = TRUE;
++    else if (fmap->count > 0
++        && !((flags & ~fmap->map.flags) & GST_MAP_READWRITE))
++      shared = TRUE;
++    if (shared) {
++      fmap->count++;
++      *info = fmap->map;
++      info->user_data[0] = fmap;
++    }
++    g_mutex_unlock (&fmap->lock);
++  }
++
++  /* a copied buffer or a wider map than the one in use, map on its own */
++  if (!shared) {
++    if (!gst_buffer_map (meta->buffer, info, flags))
++      return FALSE;
++    info->user_data[0] = NULL;
++  }
++
++  *data = (guint8 *) info->data + meta->offset[plane];
++  *stride = meta->stride[plane];
++  return TRUE;
++}
++
++static gboolean
++cedarc_frame_meta_unmap (GstVideoMeta * meta, guint plane, GstMapInfo * info)
++{
++  GstOMXCedarcFrameMap *fmap = info->user_data[0];
++
++  if (!fmap) {
++    gst_buffer_unmap (meta->buffer, info);
++    return TRUE;
++  }
++
++  g_mutex_lock (&fmap->lock);
++  if (--fmap->count == 0)
++    gst_buffer_unmap (meta->buffer, &fmap->map);
++  g_mutex_unlock (&fmap->lock);
++  return TRUE;
++}
++
+ static GstFlowReturn
+ gst_omx_buffer_pool_alloc_buffer (GstBufferPool * bpool,
+     GstBuffer ** buffer, GstBufferPoolAcquireParams * params)
+@@ -425,6 +497,17 @@ gst_omx_buffer_pool_alloc_buffer (GstBufferPool * bpool,
+       if (gst_omx_video_get_port_padding (pool->port, &pool->video_info,
+               &align))
+         gst_video_meta_set_alignment (meta, align);
++
++      if (pool->output_mode == GST_OMX_BUFFER_MODE_DMABUF
++          && gst_omx_port_is_cedarc_dmabuf (pool->port)) {
++        GstOMXCedarcFrameMap *fmap = g_new0 (GstOMXCedarcFrameMap, 1);
++
++        g_mutex_init (&fmap->lock);
++        gst_mini_object_set_qdata (GST_MINI_OBJECT (buf),
++            cedarc_frame_map_quark, fmap, cedarc_frame_map_free);
++        meta->map = cedarc_frame_meta_map;
++        meta->unmap = cedarc_frame_meta_unmap;
++      }
+     }
+   }
+ 
+@@ -633,6 +716,9 @@ gst_omx_buffer_pool_class_init (GstOMXBufferPoolClass * klass)
+   GObjectClass *gobject_class = (GObjectClass *) klass;
+   GstBufferPoolClass *gstbufferpool_class = (GstBufferPoolClass *) klass;
+ 
++  cedarc_frame_map_quark =
++      g_quark_from_static_string ("GstOMXCedarcFrameMap");
++
+   gobject_class->finalize = gst_omx_buffer_pool_finalize;
+   gstbufferpool_class->start = gst_omx_buffer_pool_start;
+   gstbufferpool_class->stop = gst_omx_buffer_pool_stop;
+diff --git a/omx/gstomxvideodec.c b/omx/gstomxvideodec.c
+index 0cba363..181b540 100644
+--- a/omx/gstomxvideodec.c
++++ b/omx/gstomxvideodec.c
+@@ -308,6 +308,12 @@ gst_omx_video_dec_open (GstVideoDecoder * decoder)
+ #ifdef USE_OMX_TARGET_ZYNQ_USCALE_PLUS
+   GST_DEBUG_OBJECT (self, "Configure decoder output to export dmabuf");
+   self->dmabuf = gst_omx_port_set_dmabuf (self->dec_out_port, TRUE);
++#else
++  if (self->dec_out_port
++      && gst_omx_port_is_cedarc_dmabuf (self->dec_out_port)) {
++    GST_DEBUG_OBJECT (self, "Exporting cedarc's frames as dmabuf");
++    self->dmabuf = gst_omx_port_set_dmabuf (self->dec_out_port, TRUE);
++  }
+ #endif
+ 
+   if (!self->dec_in_port || !self->dec_out_port)
+@@ -532,6 +538,35 @@ gst_omx_video_dec_change_state (GstElement * element, GstStateChange transition)
+   return ret;
+ }
+ 
++/* cedarc's frames are padded (720p comes as 736 lines), the visible size is
++ * only in the output crop */
++static void
++gst_omx_video_dec_get_output_size (GstOMXVideoDec * self,
++    OMX_PARAM_PORTDEFINITIONTYPE * port_def, guint * width, guint * height)
++{
++  OMX_CONFIG_RECTTYPE crop;
++
++  *width = port_def->format.video.nFrameWidth;
++  *height = port_def->format.video.nFrameHeight;
++
++  if (!(self->dec->hacks & GST_OMX_HACK_CEDARC_DMABUF_OUTPUT))
++    return;
++
++  GST_OMX_INIT_STRUCT (&crop);
++  crop.nPortIndex = self->dec_out_port->index;
++  if (gst_omx_component_get_config (self->dec,
++          OMX_IndexConfigCommonOutputCrop, &crop) != OMX_ErrorNone)
++    return;
++
++  if (crop.nLeft == 0 && crop.nTop == 0 && crop.nWidth > 0
++      && crop.nHeight > 0 && crop.nWidth <= *width && crop.nHeight <= *height) {
++    GST_DEBUG_OBJECT (self, "Output crop %ux%u of %ux%u",
++        (guint) crop.nWidth, (guint) crop.nHeight, *width, *height);
++    *width = crop.nWidth;
++    *height = crop.nHeight;
++  }
++}
++
+ static gboolean
+ gst_omx_video_dec_fill_buffer (GstOMXVideoDec * self,
+     GstOMXBuffer * inbuf, GstBuffer * outbuf)
+@@ -542,10 +577,16 @@ gst_omx_video_dec_fill_buffer (GstOMXVideoDec * self,
+   OMX_PARAM_PORTDEFINITIONTYPE *port_def = &self->dec_out_port->port_def;
+   gboolean ret = FALSE;
+   GstVideoFrame frame;
++  const guint8 *frame_data = inbuf->omx_buf->pBuffer + inbuf->omx_buf->nOffset;
++  guint out_width, out_height;
++
++  /* the buffer only describes cedarc's frame, which is mapped in this process */
++  if (self->dmabuf && gst_omx_port_is_cedarc_dmabuf (self->dec_out_port))
++    frame_data = ((GstOMXCedarcFrame *) inbuf->omx_buf->pBuffer)->vir_y;
+ 
+-  if (vinfo->width != port_def->format.video.nFrameWidth ||
+-      GST_VIDEO_INFO_FIELD_HEIGHT (vinfo) !=
+-      port_def->format.video.nFrameHeight) {
++  gst_omx_video_dec_get_output_size (self, port_def, &out_width, &out_height);
++  if (vinfo->width != out_width ||
++      GST_VIDEO_INFO_FIELD_HEIGHT (vinfo) != out_height) {
+     GST_ERROR_OBJECT (self, "Resolution do not match: port=%ux%u vinfo=%dx%d",
+         (guint) port_def->format.video.nFrameWidth,
+         (guint) port_def->format.video.nFrameHeight,
+@@ -562,9 +603,7 @@ gst_omx_video_dec_fill_buffer (GstOMXVideoDec * self,
+       goto done;
+     }
+ 
+-    memcpy (map.data,
+-        inbuf->omx_buf->pBuffer + inbuf->omx_buf->nOffset,
+-        inbuf->omx_buf->nFilledLen);
++    memcpy (map.data, frame_data, inbuf->omx_buf->nFilledLen);
+     gst_buffer_unmap (outbuf, &map);
+     ret = TRUE;
+     goto done;
+@@ -645,7 +684,7 @@ gst_omx_video_dec_fill_buffer (GstOMXVideoDec * self,
+         break;
+     }
+ 
+-    src = inbuf->omx_buf->pBuffer + inbuf->omx_buf->nOffset;
++    src = frame_data;
+     for (p = 0; p < GST_VIDEO_INFO_N_PLANES (vinfo); p++) {
+       const guint8 *data;
+       guint8 *dst;
+@@ -1319,7 +1358,7 @@ gst_omx_video_dec_reconfigure_output_port (GstOMXVideoDec * self)
+   OMX_PARAM_PORTDEFINITIONTYPE port_def;
+   GstVideoFormat format;
+   GstVideoInterlaceMode interlace_mode;
+-  guint frame_height;
++  guint frame_width, frame_height;
+ 
+   /* At this point the decoder output port is disabled */
+   interlace_mode = gst_omx_video_dec_get_output_interlace_info (self);
+@@ -1553,7 +1592,8 @@ gst_omx_video_dec_reconfigure_output_port (GstOMXVideoDec * self)
+     goto done;
+   }
+ 
+-  frame_height = port_def.format.video.nFrameHeight;
++  gst_omx_video_dec_get_output_size (self, &port_def, &frame_width,
++      &frame_height);
+   /* OMX's frame height is actually the field height in alternate mode
+    * while it's always the full frame height in gst. */
+   if (interlace_mode == GST_VIDEO_INTERLACE_MODE_ALTERNATE ||
+@@ -1566,13 +1606,11 @@ gst_omx_video_dec_reconfigure_output_port (GstOMXVideoDec * self)
+   GST_DEBUG_OBJECT (self,
+       "Setting output state: format %s (%d), width %u, height %u",
+       gst_video_format_to_string (format),
+-      port_def.format.video.eColorFormat,
+-      (guint) port_def.format.video.nFrameWidth, frame_height);
++      port_def.format.video.eColorFormat, frame_width, frame_height);
+ 
+   state =
+       gst_video_decoder_set_interlaced_output_state (GST_VIDEO_DECODER (self),
+-      format, interlace_mode, port_def.format.video.nFrameWidth,
+-      frame_height, self->input_state);
++      format, interlace_mode, frame_width, frame_height, self->input_state);
+ 
+   if (!gst_video_decoder_negotiate (GST_VIDEO_DECODER (self))) {
+     gst_video_codec_state_unref (state);
+@@ -1781,6 +1819,7 @@ gst_omx_video_dec_loop (GstOMXVideoDec * self)
+         goto reconfigure_error;
+     } else {
+       GstVideoInterlaceMode interlace_mode;
++      guint frame_width, frame_height;
+ 
+       /* Just update caps */
+       GST_VIDEO_DECODER_STREAM_LOCK (self);
+@@ -1802,18 +1841,18 @@ gst_omx_video_dec_loop (GstOMXVideoDec * self)
+         goto caps_failed;
+       }
+ 
++      gst_omx_video_dec_get_output_size (self, &port_def, &frame_width,
++          &frame_height);
+       GST_DEBUG_OBJECT (self,
+           "Setting output state: format %s (%d), width %u, height %u",
+           gst_video_format_to_string (format),
+-          port_def.format.video.eColorFormat,
+-          (guint) port_def.format.video.nFrameWidth,
+-          (guint) port_def.format.video.nFrameHeight);
++          port_def.format.video.eColorFormat, frame_width, frame_height);
+       interlace_mode = gst_omx_video_dec_get_output_interlace_info (self);
+ 
+       state =
+           gst_video_decoder_set_interlaced_output_state (GST_VIDEO_DECODER
+-          (self), format, interlace_mode, port_def.format.video.nFrameWidth,
+-          port_def.format.video.nFrameHeight, self->input_state);
++          (self), format, interlace_mode, frame_width, frame_height,
++          self->input_state);
+ 
+       /* Take framerate and pixel-aspect-ratio from sinkpad caps */
+ 

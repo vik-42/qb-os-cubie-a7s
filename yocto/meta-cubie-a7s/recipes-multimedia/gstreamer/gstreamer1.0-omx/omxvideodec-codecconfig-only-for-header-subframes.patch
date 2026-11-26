@@ -1,0 +1,25 @@
+omxvideodec: only flag header subframes as codec config
+
+h264parse/h265parse set GST_BUFFER_FLAG_HEADER on the access unit that carries
+SPS/PPS, which also holds the IDR slice. In au alignment that whole frame was
+sent with OMX_BUFFERFLAG_CODECCONFIG, but OpenMAX says codec config buffers
+carry only config data. CedarC asserts on codec config larger than 20 KiB and
+aborts on the first keyframe. Header-only buffers only exist in subframe mode.
+
+Upstream-Status: Pending
+
+---
+diff -ru a/omx/gstomxvideodec.c b/omx/gstomxvideodec.c
+--- a/omx/gstomxvideodec.c	2026-11-10 03:47:15.680465614 +0100
++++ b/omx/gstomxvideodec.c	2026-11-10 03:47:15.691449684 +0100
+@@ -3204,7 +3204,9 @@
+     if (first_ouput_buffer && GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT (frame))
+       buf->omx_buf->nFlags |= OMX_BUFFERFLAG_SYNCFRAME;
+ 
+-    if (header)
++    /* only subframes are header-only, a whole au flagged header still
++     * carries picture data and must not be sent as codec config */
++    if (header && subframe_mode)
+       buf->omx_buf->nFlags |= OMX_BUFFERFLAG_CODECCONFIG;
+ 
+     /* TODO: Set flags

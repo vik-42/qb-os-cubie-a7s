@@ -1,0 +1,74 @@
+From: Cubie A7S robot project
+Subject: [PATCH] img-bxm: run the gpu at full clock, apply requests made while it's off
+
+Without imagination's own governor (not in the allwinner ddk drop) the
+driver registers simple_ondemand. It only ever got zero load from this
+driver and kept the gpu at 400MHz under full load, logging "dvfs failed
+with (-11)" twice a second. Register with performance: full clock when
+busy, the gpu power-gates when idle, and the thermal cooling device caps
+the clock when it gets hot.
+
+devfreq_target() also ignored any request while the gpu was power-gated
+(dvfs state OFF) and reported the old clock as accepted. The gpu gates
+between bursts of work, so a thermal cap released while it was off left it
+at 400MHz until the next reboot. With the gpu off there's no firmware to
+coordinate with: under the power lock, set voltage and clock in the usual
+order and record the new speed, which the driver hands to the firmware at
+power up.
+
+Upstream-Status: Pending
+---
+diff -ru a/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c b/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c
+--- a/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c	2026-11-11 22:04:48.370354292 +0100
++++ b/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c	2026-11-11 22:05:35.584686138 +0100
+@@ -132,6 +132,40 @@
+ 	}
+ 
+ 	psRGXTimingInfo = psRGXData->psRGXTimingInfo;
++
++	/* gpu off: no firmware to sync with, set the clock now (dropping the request kept the old one) */
++	if (psDVFSDevice->eState == PVR_DVFS_STATE_OFF &&
++	    PVRSRVPowerLock(psDeviceNode) == PVRSRV_OK)
++	{
++		if (psDVFSDevice->eState == PVR_DVFS_STATE_OFF)
++		{
++			opp = devfreq_recommended_opp(dev, requested_freq, flags);
++			if (IS_ERR(opp))
++			{
++				PVRSRVPowerUnlock(psDeviceNode);
++				return PTR_ERR(opp);
++			}
++			ui32Freq = dev_pm_opp_get_freq(opp);
++			ui32Volt = dev_pm_opp_get_voltage(opp);
++			dev_pm_opp_put(opp);
++
++			ui32CurFreq = psRGXTimingInfo->ui32CoreClockSpeed;
++			if (ui32Freq > ui32CurFreq)
++				psDVFSDeviceCfg->pfnSetVoltage(psDeviceNode->psDevConfig->hSysData, ui32Volt);
++			if (ui32Freq != ui32CurFreq)
++				psDVFSDeviceCfg->pfnSetFrequency(psDeviceNode->psDevConfig->hSysData, ui32Freq);
++			if (ui32Freq < ui32CurFreq)
++				psDVFSDeviceCfg->pfnSetVoltage(psDeviceNode->psDevConfig->hSysData, ui32Volt);
++			psRGXTimingInfo->ui32CoreClockSpeed = ui32Freq;
++
++			PVRSRVPowerUnlock(psDeviceNode);
++			*requested_freq = ui32Freq;
++			return 0;
++		}
++		/* it powered up meanwhile, take the normal path */
++		PVRSRVPowerUnlock(psDeviceNode);
++	}
++
+ 	if (psDVFSDevice->eState != PVR_DVFS_STATE_READY)
+ 	{
+ 		*requested_freq = psRGXTimingInfo->ui32CoreClockSpeed;
+@@ -1180,7 +1214,8 @@
+ 													  "pvr_balanced",
+ 													  &psDVFSDevice->data);
+ #else
+-													  "simple_ondemand",
++													  /* full clock when busy, it power-gates when idle and thermal caps it; simple_ondemand saw zero load, stuck at 400MHz */
++													  "performance",
+ 													  &psDVFSDevice->data);
+ #endif
+ 

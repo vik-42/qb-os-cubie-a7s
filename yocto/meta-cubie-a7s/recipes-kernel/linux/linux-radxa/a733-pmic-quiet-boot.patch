@@ -1,0 +1,223 @@
+a733: disable the pmic functions this board doesn't use
+
+The axp8191 mfd driver adds a child device for battery temperature control
+and a test "virtual consumer" for every rail. The virtual consumer is a
+kernel test driver (sysfs knobs to change a rail by hand), its first probe
+prints a "only for testing and debugging, do not use it in a production
+kernel" notice, and each device logs "DMA mask not set". The board dts has
+nodes for 30 of the rails, none for bldo1-5 and cldo1-5 and none for the
+temperature control, so each of those printed "Failed to locate of_node"
+and the temperature control driver failed with "device is not configed".
+
+Mark the 30 existing test consumers disabled and add the missing ones as
+disabled nodes. mfd-core skips disabled children without a message, so
+none of these devices are created. The test consumers never enable a rail
+(only their sysfs writes do), so which rails stay on doesn't change.
+
+Upstream-Status: Pending
+
+--- a/device-a733/configs/cubie_a7s/linux-6.6/board.dts
++++ b/device-a733/configs/cubie_a7s/linux-6.6/board.dts
+@@ -1571,124 +1571,202 @@
+ 
+ 		virtual-dcdc1 {
+ 			compatible = "xpower-vregulator,dcdc1";
++			status = "disabled";
+ 			dcdc1-supply = <&reg_dcdc1>;
+ 		};
+ 		virtual-dcdc2 {
+ 			compatible = "xpower-vregulator,dcdc2";
++			status = "disabled";
+ 			dcdc2-supply = <&reg_dcdc2>;
+ 		};
+ 		virtual-dcdc3 {
+ 			compatible = "xpower-vregulator,dcdc3";
++			status = "disabled";
+ 			dcdc3-supply = <&reg_dcdc3>;
+ 		};
+ 		virtual-dcdc4 {
+ 			compatible = "xpower-vregulator,dcdc4";
++			status = "disabled";
+ 			dcdc4-supply = <&reg_dcdc4>;
+ 		};
+ 		virtual-dcdc5 {
+ 			compatible = "xpower-vregulator,dcdc5";
++			status = "disabled";
+ 			dcdc5-supply = <&reg_dcdc5>;
+ 		};
+ 		virtual-dcdc6 {
+ 			compatible = "xpower-vregulator,dcdc6";
++			status = "disabled";
+ 			dcdc6-supply = <&reg_dcdc6>;
+ 		};
+ 		virtual-dcdc7 {
+ 			compatible = "xpower-vregulator,dcdc7";
++			status = "disabled";
+ 			dcdc7-supply = <&reg_dcdc7>;
+ 		};
+ 		virtual-dcdc8 {
+ 			compatible = "xpower-vregulator,dcdc8";
++			status = "disabled";
+ 			dcdc8-supply = <&reg_dcdc8>;
+ 		};
+ 		virtual-dcdc9 {
+ 			compatible = "xpower-vregulator,dcdc9";
++			status = "disabled";
+ 			dcdc9-supply = <&reg_dcdc9>;
+ 		};
+ 		virtual-rtcldo {
+ 			compatible = "xpower-vregulator,rtcldo";
++			status = "disabled";
+ 			rtcldo-supply = <&reg_rtcldo>;
+ 		};
+ 		virtual-aldo1 {
+ 			compatible = "xpower-vregulator,aldo1";
++			status = "disabled";
+ 			aldo1-supply = <&reg_aldo1>;
+ 		};
+ 		virtual-aldo2 {
+ 			compatible = "xpower-vregulator,aldo2";
++			status = "disabled";
+ 			aldo2-supply = <&reg_aldo2>;
+ 		};
+ 		virtual-aldo3 {
+ 			compatible = "xpower-vregulator,aldo3";
++			status = "disabled";
+ 			aldo3-supply = <&reg_aldo3>;
+ 		};
+ 		virtual-aldo4 {
+ 			compatible = "xpower-vregulator,aldo4";
++			status = "disabled";
+ 			aldo4-supply = <&reg_aldo4>;
+ 		};
+ 		virtual-aldo5 {
+ 			compatible = "xpower-vregulator,aldo5";
++			status = "disabled";
+ 			aldo5-supply = <&reg_aldo5>;
+ 		};
+ 		virtual-aldo6 {
+ 			compatible = "xpower-vregulator,aldo6";
++			status = "disabled";
+ 			aldo6-supply = <&reg_aldo6>;
+ 		};
+ 		virtual-dldo1 {
+ 			compatible = "xpower-vregulator,dldo1";
++			status = "disabled";
+ 			dldo1-supply = <&reg_dldo1>;
+ 		};
+ 		virtual-dldo2 {
+ 			compatible = "xpower-vregulator,dldo2";
++			status = "disabled";
+ 			dldo2-supply = <&reg_dldo2>;
+ 		};
+ 		virtual-dldo3 {
+ 			compatible = "xpower-vregulator,dldo3";
++			status = "disabled";
+ 			dldo3-supply = <&reg_dldo3>;
+ 		};
+ 		virtual-dldo4 {
+ 			compatible = "xpower-vregulator,dldo4";
++			status = "disabled";
+ 			dldo4-supply = <&reg_dldo4>;
+ 		};
+ 		virtual-dldo5 {
+ 			compatible = "xpower-vregulator,dldo5";
++			status = "disabled";
+ 			dldo5-supply = <&reg_dldo5>;
+ 		};
+ 		virtual-dldo6 {
+ 			compatible = "xpower-vregulator,dldo6";
++			status = "disabled";
+ 			dldo6-supply = <&reg_dldo6>;
+ 		};
+ 		virtual-eldo1 {
+ 			compatible = "xpower-vregulator,eldo1";
++			status = "disabled";
+ 			eldo1-supply = <&reg_eldo1>;
+ 		};
+ 		virtual-eldo2 {
+ 			compatible = "xpower-vregulator,eldo2";
++			status = "disabled";
+ 			eldo2-supply = <&reg_eldo2>;
+ 		};
+ 		virtual-eldo3 {
+ 			compatible = "xpower-vregulator,eldo3";
++			status = "disabled";
+ 			eldo3-supply = <&reg_eldo3>;
+ 		};
+ 		virtual-eldo4 {
+ 			compatible = "xpower-vregulator,eldo4";
++			status = "disabled";
+ 			eldo4-supply = <&reg_eldo4>;
+ 		};
+ 		virtual-eldo5 {
+ 			compatible = "xpower-vregulator,eldo5";
++			status = "disabled";
+ 			eldo5-supply = <&reg_eldo5>;
+ 		};
+ 		virtual-eldo6 {
+ 			compatible = "xpower-vregulator,eldo6";
++			status = "disabled";
+ 			eldo6-supply = <&reg_eldo6>;
+ 		};
+ 		virtual-dc1sw1 {
+ 			compatible = "xpower-vregulator,dc1sw1";
++			status = "disabled";
+ 			dc1sw-supply = <&reg_dc1sw1>;
+ 		};
+ 		virtual-dc1sw2 {
+ 			compatible = "xpower-vregulator,dc1sw2";
++			status = "disabled";
+ 			dc1sw-supply = <&reg_dc1sw2>;
+ 		};
++
++		/* no battery on this board, nothing for the pmic's battery temperature control to do */
++		temp-ctrl {
++			compatible = "x-powers,axp8191-temp-ctrl";
++			status = "disabled";
++		};
++
++		/* the driver adds a test consumer for these rails too, they had no node so each one warned at boot */
++		virtual-bldo1 {
++			compatible = "xpower-vregulator,bldo1";
++			status = "disabled";
++		};
++		virtual-bldo2 {
++			compatible = "xpower-vregulator,bldo2";
++			status = "disabled";
++		};
++		virtual-bldo3 {
++			compatible = "xpower-vregulator,bldo3";
++			status = "disabled";
++		};
++		virtual-bldo4 {
++			compatible = "xpower-vregulator,bldo4";
++			status = "disabled";
++		};
++		virtual-bldo5 {
++			compatible = "xpower-vregulator,bldo5";
++			status = "disabled";
++		};
++		virtual-cldo1 {
++			compatible = "xpower-vregulator,cldo1";
++			status = "disabled";
++		};
++		virtual-cldo2 {
++			compatible = "xpower-vregulator,cldo2";
++			status = "disabled";
++		};
++		virtual-cldo3 {
++			compatible = "xpower-vregulator,cldo3";
++			status = "disabled";
++		};
++		virtual-cldo4 {
++			compatible = "xpower-vregulator,cldo4";
++			status = "disabled";
++		};
++		virtual-cldo5 {
++			compatible = "xpower-vregulator,cldo5";
++			status = "disabled";
++		};
+ 	};
+ };
+ 

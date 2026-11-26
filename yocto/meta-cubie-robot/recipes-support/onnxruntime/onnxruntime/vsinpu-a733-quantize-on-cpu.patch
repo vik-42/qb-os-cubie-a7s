@@ -1,0 +1,47 @@
+vsinpu: leave standalone quantize to the cpu on a733
+
+Standalone QuantizeLinear is built as a TIM-VX DataConvert from float. On the
+A733 VIP9000 a DataConvert with float32 or float16 input fails to initialize
+(vivante.nn.tensorcopy, status -1), so every model with a float input failed to
+verify. uint8 input works because the driver runs it on an NN core; float input
+can only use the shader tensorcopy, which fails for every type on this chip
+(VIV_VX_DISABLE_TP_NN=1 breaks uint8->float too), why is not known.
+DequantizeLinear (uint8->float) works and stays on the npu. QuantizeLinear that
+belongs to a QDQ node unit is not affected.
+
+Upstream-Status: Inappropriate [A733 hardware specific]
+
+--- a/onnxruntime/core/providers/vsinpu/builders/impl/quantize_op_builder.h
++++ b/onnxruntime/core/providers/vsinpu/builders/impl/quantize_op_builder.h
+@@ -40,27 +40,10 @@
+     zero_point_tensor = 2
+   };
+ 
+-  bool IsOpSupported(const onnxruntime::GraphViewer& graph_viewer,
+-                     const Node* node) const override {
+-    auto input_defs = node->InputDefs();
+-    auto scale_shape = npu::util::GetTensorShape(*input_defs[QuantizeINPUTS::scale_tensor]);
+-    NodeAttrHelper helper(*node);
+-    if (helper.HasAttr("block_size") && helper.Get("block_size", 0) != 0) {
+-      LOGS_DEFAULT(WARNING) << "Not support block quantization.";
+-      return false;
+-    }
+-    if (!graph_viewer.IsConstantInitializer(input_defs[QuantizeINPUTS::scale_tensor]->Name(), true) ||
+-        (input_defs.size() == 3 && !graph_viewer.IsConstantInitializer(
+-                                       input_defs[QuantizeINPUTS::zero_point_tensor]->Name(), true))) {
+-      LOGS_DEFAULT(WARNING) << "Only support const scale / zero point.";
+-      return false;
+-    }
+-
+-    if (scale_shape.Size() != 1) {
+-      LOGS_DEFAULT(WARNING) << "Per channel quantized output is not supported in QuantizeLinearOp.";
+-      return false;
+-    }
+-    return true;
++  bool IsOpSupported(const onnxruntime::GraphViewer& /* graph_viewer */,
++                     const Node* /* node */) const override {
++    // float input DataConvert fails to init on the a733, cpu does the float->int at the input
++    return false;
+   }
+ 
+   bool HandleBuildOp(vsi::npu::GraphEP* graph_ep,

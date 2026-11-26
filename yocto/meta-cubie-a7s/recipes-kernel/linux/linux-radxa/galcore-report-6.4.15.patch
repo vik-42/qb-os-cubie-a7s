@@ -1,0 +1,30 @@
+galcore: report 6.4.15 so the public unified-tina userspace accepts it
+
+libGAL refuses any other kernel version, ioctl layout is the same.
+
+Upstream-Status: Inappropriate [vendor userspace mismatch]
+
+--- a/bsp/drivers/npu/aw_nna_galcore/kernel/gc_hal_kernel.c
++++ b/bsp/drivers/npu/aw_nna_galcore/kernel/gc_hal_kernel.c
+@@ -3511,8 +3511,8 @@
+     case gcvHAL_VERSION:
+         Interface->u.Version.major = gcvVERSION_MAJOR;
+         Interface->u.Version.minor = gcvVERSION_MINOR;
+-        Interface->u.Version.patch = gcvVERSION_PATCH;
+-        Interface->u.Version.build = gcvVERSION_BUILD;
++        Interface->u.Version.patch = 15;
++        Interface->u.Version.build = 690884;
+ #if gcmIS_DEBUG(gcdDEBUG_TRACE)
+         gcmkTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_KERNEL,
+                        "KERNEL version %s", gcvVERSION_STRING);
+@@ -5513,8 +5513,8 @@
+ {
+     Interface->u.Version.major = gcvVERSION_MAJOR;
+     Interface->u.Version.minor = gcvVERSION_MINOR;
+-    Interface->u.Version.patch = gcvVERSION_PATCH;
+-    Interface->u.Version.build = gcvVERSION_BUILD;
++    Interface->u.Version.patch = 15;
++    Interface->u.Version.build = 690884;
+ #if gcmIS_DEBUG(gcdDEBUG_TRACE)
+     gcmkTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_KERNEL, "KERNEL version %s", gcvVERSION_STRING);
+ #endif

@@ -1,0 +1,55 @@
+From: Cubie A7S robot project
+Subject: [PATCH] a733: throttle at 90C, gpu as a cooling device
+
+The board dts sets the cpu zones' throttling target to 60C, the same as its
+fan trips. Without a fan the cpus then sat at 416MHz whenever the die was
+over 60C, idle included. Throttle at the soc's own 90C and leave the fan
+trips alone, so a fan starts at 60C and the clocks only drop when the fan
+isn't enough, or isn't there.
+
+The img gpu driver only registered a devfreq cooling device when the platform
+gave it power ops, which sunxi doesn't, so the dt's gpu trips had nothing to
+throttle. Register it without a power model.
+
+Upstream-Status: Inappropriate [board/vendor tuning]
+---
+diff -ru a/device-a733/configs/cubie_a7s/linux-6.6/board.dts b/device-a733/configs/cubie_a7s/linux-6.6/board.dts
+--- a/device-a733/configs/cubie_a7s/linux-6.6/board.dts	2026-11-11 20:43:24.151458344 +0100
++++ b/device-a733/configs/cubie_a7s/linux-6.6/board.dts	2026-11-11 20:46:03.565630215 +0100
+@@ -842,8 +842,9 @@
+ 	status = "okay";
+ };
+ 
++/* fan trips stay at 60C, throttling waits for the soc default 90C so fanless boards keep their clocks */
+ &cpul_target {
+-	temperature = <60000>;
++	temperature = <90000>;
+ 	hysteresis = <2000>;
+ };
+ 
+@@ -865,7 +866,7 @@
+ };
+ 
+ &cpub_target {
+-	temperature = <60000>;
++	temperature = <90000>;
+ 	hysteresis = <2000>;
+ };
+ 
+diff -ru a/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c b/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c
+--- a/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c	2026-11-11 20:43:24.156479186 +0100
++++ b/bsp/modules/gpu/img-bxm/linux/rogue_km/services/server/env/linux/pvr_dvfs_device.c	2026-11-11 20:46:11.764508129 +0100
+@@ -965,11 +965,9 @@
+ 		return -EINVAL;
+ 	}
+ 
++	/* no power ops: a plain state cooling device, step_wise still throttles it */
+ 	if (!powerOps)
+-	{
+-		dev_info(dev, "Cooling: power ops not registered, not enabling cooling");
+-		return 0;
+-	}
++		dev_info(dev, "Cooling: no power ops, registering without a power model");
+ 
+ 	of_node = of_node_get(dev->of_node);
+ 

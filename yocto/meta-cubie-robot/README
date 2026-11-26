@@ -1,0 +1,100 @@
+meta-cubie-robot
+================
+
+Yocto (scarthgap) product layer for robots on the Radxa Cubie A7S: the QB OS
+distro and the images, on top of the meta-cubie-a7s board layer.
+
+Unofficial community project, not made, endorsed or supported by Radxa,
+Allwinner, Imagination Technologies, VeriSilicon, the Yocto Project or any
+other company or project whose software it builds.
+
+
+Dependencies
+------------
+
+Required:
+
+  URI: https://git.yoctoproject.org/poky
+  branch: scarthgap
+  layers: meta
+
+  meta-cubie-a7s (same repo)
+
+Optional, enables the ROS 2 Jazzy images (dynamic-layers/meta-ros):
+
+  URI: https://github.com/ros/meta-ros
+  branch: scarthgap
+  layers: meta-ros-common, meta-ros2, meta-ros2-jazzy
+
+  URI: https://git.openembedded.org/meta-openembedded
+  branch: scarthgap
+  layers: meta-oe, meta-python
+
+  URI: https://github.com/kraj/meta-clang
+  branch: scarthgap
+
+Optional, adds Docker to the ROS images (dynamic-layers/meta-virtualization):
+
+  URI: https://git.yoctoproject.org/meta-virtualization
+  branch: scarthgap
+
+  URI: https://git.openembedded.org/meta-openembedded
+  branch: scarthgap
+  layers: meta-oe, meta-python, meta-networking, meta-filesystems
+
+
+Distro
+------
+
+  DISTRO = "qb"
+
+QB OS, started from oe-core's defaultsetup.conf as the Yocto manual suggests:
+sysvinit, rpm packages, Poky's hardening flags, uninative and hash equivalence,
+no ptest. See conf/distro/qb.conf.
+
+
+Images
+------
+
+  cubie-a7s-image-base   minimal image, no ROS (release)
+  cubie-a7s-image-playground
+                         base plus NPU samples (tim-vx-lenet), CedarC codec demos and
+                         GStreamer test sources, kmscube, glmark2, vulkaninfo and clinfo
+                         for experimenting (dev)
+  cubie-a7s-image        ROS 2 Jazzy + Zenoh, needs the meta-ros layers (release)
+  cubie-a7s-image-dev    same as cubie-a7s-image (dev)
+
+The ROS images also get Docker when meta-virtualization is in bblayers. It is off at
+boot: /etc/init.d/docker.init start, or update-rc.d docker.init defaults to start it
+at every boot.
+
+All of them include the board's drivers and firmware, wifi (wpa-supplicant, iw), an
+SSH server, ONNX Runtime with the NPU provider, GStreamer with the hardware codecs
+and the GPU stack. The first boot grows the root partition and filesystem to fill the
+SD card, once (recipes-core/rootfs-grow).
+With meta-networking in bblayers they also set the clock from the network with chrony
+(`chronyc tracking` shows the state).
+
+Set in build/conf/site.conf (not tracked):
+
+  WIFI_SSID, WIFI_PSK            wlan0 connects at boot
+  CUBIE_SSH_AUTHORIZED_KEYS      public key file for root over SSH
+  CUBIE_ROOT_PASSWORD_HASH       `openssl passwd -6` output, for the serial console
+
+Release images need at least one of the two logins, the build fails otherwise, and
+also fails if debug-tweaks reaches a release image. SSH takes keys only. Dev images
+have passwordless root and dnf, never ship those.
+
+
+Building
+--------
+
+  source poky/oe-init-build-env build
+  bitbake-layers add-layer ../meta-cubie-a7s ../meta-cubie-robot
+  MACHINE=cubie-a7s DISTRO=qb bitbake cubie-a7s-image-base
+
+
+Maintainer
+----------
+
+Vittorio Passaretti <vittoriopt@yahoo.it>

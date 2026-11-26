@@ -1,0 +1,2 @@
+# npu node, vipcore used to be world rw too
+KERNEL=="galcore", MODE="0666"

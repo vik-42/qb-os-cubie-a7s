@@ -1,0 +1,170 @@
+drm: sunxi: edp: bring the link back after a replug or a failed training
+
+Unplugging stops the main link, plugging back in only rereads the dpcd and
+edid. When the display pipe stayed active (a console, no compositor), no one
+asks for a modeset and the link is never trained again, so the screen stays
+black until a program changes the mode. Link training can also fail on a sink
+that isn't ready yet: a typec dock with a dp-to-hdmi converter fails hbr2
+inter-lane alignment if trained right after hpd, and works a second later.
+
+From the hpd thread, commit a full modeset on the active pipe (which retrains
+the link) 1s after a plugin, and 2s after an enable that failed, at most 5
+times per plug event. A successful enable clears the request, so nothing
+extra happens when a compositor already set the mode after the hotplug event,
+and a pipe that is off is left alone: whoever turns it on trains the link.
+
+Upstream-Status: Pending
+
+--- a/bsp/drivers/drm/sunxi_drm_edp.c
++++ b/bsp/drivers/drm/sunxi_drm_edp.c
+@@ -24,6 +24,7 @@
+ #include <linux/pinctrl/consumer.h>
+ #include <linux/reset.h>
+ #include <linux/pm_runtime.h>
++#include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_of.h>
+ #include <drm/drm_plane_helper.h>
+@@ -142,6 +143,11 @@
+ 	bool sw_enable;
+ 	bool boot_enabled;
+ 
++	/* relink after a replug, or when link training failed (see edp_relink_check) */
++	bool relink_pending;
++	int relink_tries;
++	unsigned long relink_at;
++
+ 	struct edp_tx_core edp_core;
+ 	struct sunxi_edp_hw_desc edp_hw;
+ 	struct edp_tx_cap source_cap;
+@@ -724,6 +730,101 @@
+ 
+ }
+ 
++/*
++ * Commit a full modeset on the active display pipe, which runs the encoder
++ * enable path and with it link training. Returns 0 when it committed, 1 when
++ * there's nothing to retrain (no drm device yet, pipe off), or an error.
++ */
++static int edp_relink_active_pipe(struct sunxi_drm_edp *drm_edp)
++{
++	struct drm_connector *connector = &drm_edp->sdrm.connector;
++	struct drm_modeset_acquire_ctx ctx;
++	struct drm_connector_state *conn_state;
++	struct drm_crtc_state *crtc_state;
++	struct drm_atomic_state *state;
++	int ret;
++
++	if (!connector->dev || !connector->dev->registered)
++		return 1;
++
++	state = drm_atomic_state_alloc(connector->dev);
++	if (!state)
++		return -ENOMEM;
++
++	drm_modeset_acquire_init(&ctx, 0);
++	state->acquire_ctx = &ctx;
++retry:
++	conn_state = drm_atomic_get_connector_state(state, connector);
++	if (IS_ERR(conn_state)) {
++		ret = PTR_ERR(conn_state);
++		goto out;
++	}
++
++	ret = 1;
++	if (!conn_state->crtc)
++		goto out;
++
++	crtc_state = drm_atomic_get_crtc_state(state, conn_state->crtc);
++	if (IS_ERR(crtc_state)) {
++		ret = PTR_ERR(crtc_state);
++		goto out;
++	}
++
++	if (!crtc_state->active)
++		goto out;
++
++	crtc_state->connectors_changed = true;
++	ret = drm_atomic_commit(state);
++out:
++	if (ret == -EDEADLK) {
++		drm_atomic_state_clear(state);
++		drm_modeset_backoff(&ctx);
++		goto retry;
++	}
++	if (ret < 0)
++		EDP_WRN("relink commit failed: %d\n", ret);
++
++	drm_atomic_state_put(state);
++	drm_modeset_drop_locks(&ctx);
++	drm_modeset_acquire_fini(&ctx);
++	return ret;
++}
++
++/*
++ * Unplugging stops the main link and plugging back in only rereads the dpcd
++ * and edid, so an active pipe (a console, no compositor) stays black: nobody
++ * asks for a modeset. Link training can also fail on a sink that isn't ready
++ * yet, some typec docks need a moment after hpd before hbr2 aligns.
++ * So 1s after a plugin, or 2s after a failed enable, retrain the active pipe
++ * unless something already brought the output up, 5 tries per plug at most.
++ */
++#define EDP_RELINK_MAX_TRIES	5
++
++static void edp_relink_check(struct sunxi_drm_edp *drm_edp)
++{
++	int ret;
++
++	if (!drm_edp->hpd_state || !READ_ONCE(drm_edp->relink_pending))
++		return;
++	if (time_before(jiffies, READ_ONCE(drm_edp->relink_at)))
++		return;
++
++	if (drm_edp->relink_tries >= EDP_RELINK_MAX_TRIES) {
++		WRITE_ONCE(drm_edp->relink_pending, false);
++		EDP_WRN("link still down after %d relinks, giving up\n",
++			drm_edp->relink_tries);
++		return;
++	}
++
++	drm_edp->relink_tries++;
++	WRITE_ONCE(drm_edp->relink_at, jiffies + 2 * HZ);
++
++	ret = edp_relink_active_pipe(drm_edp);
++	/* pipe off: whoever turns it on trains the link */
++	if (ret > 0)
++		WRITE_ONCE(drm_edp->relink_pending, false);
++}
++
+ s32 edp_running_thread(void *parg)
+ {
+ 	struct sunxi_drm_edp *drm_edp = NULL;
+@@ -772,7 +873,12 @@
+ 				edp_report_hpd_work(drm_edp, drm_edp->hpd_state_now);
+ 				drm_edp->hpd_state = drm_edp->hpd_state_now;
+ 				EDP_DRV_DBG("hpd = %d\n", drm_edp->hpd_state_now);
++
++				drm_edp->relink_tries = 0;
++				WRITE_ONCE(drm_edp->relink_at, jiffies + HZ);
++				WRITE_ONCE(drm_edp->relink_pending, drm_edp->hpd_state);
+ 			}
++			edp_relink_check(drm_edp);
+ 		}
+ 	}
+ 	return RET_OK;
+@@ -3917,10 +4023,15 @@
+ 	extcon_set_state_sync(drm_edp->extcon_edp, EXTCON_JACK_VIDEO_OUT, EDP_HPD_PLUGIN);
+ 
+ 	drm_edp->is_enabled = true;
++	/* link is up, nothing left for edp_relink_check */
++	WRITE_ONCE(drm_edp->relink_pending, false);
+ 	return;
+ FAIL:
+ 	DRM_DEBUG_DRIVER("%s fail!\n", __FUNCTION__);
+ 	drm_edp->is_enabled = false;
++	/* sink may not be ready yet, have edp_relink_check try again */
++	WRITE_ONCE(drm_edp->relink_at, jiffies + 2 * HZ);
++	WRITE_ONCE(drm_edp->relink_pending, true);
+ }
+ 
+ int sunxi_edp_encoder_atomic_check(struct drm_encoder *encoder,

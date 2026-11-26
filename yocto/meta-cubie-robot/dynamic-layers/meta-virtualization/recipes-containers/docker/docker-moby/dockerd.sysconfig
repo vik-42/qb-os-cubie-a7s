@@ -1,0 +1,2 @@
+# options for dockerd, read by /etc/init.d/docker.init
+other_args="--pidfile $pidfile --raw-logs"

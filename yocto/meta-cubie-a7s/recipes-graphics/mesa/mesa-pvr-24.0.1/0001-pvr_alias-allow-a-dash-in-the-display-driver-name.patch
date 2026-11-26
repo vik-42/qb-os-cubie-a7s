@@ -1,0 +1,21 @@
+pvr_alias: allow a dash in the display driver name
+
+The alias is both the <name>_dri.so file and part of the
+__driDriverGetExtensions_<name> symbol. The loader already maps '-' to '_'
+when it looks the symbol up, so do the same for the define, otherwise a
+display driver like sunxi-drm doesn't compile.
+
+Upstream-Status: Pending
+
+---
+diff --git a/src/gallium/drivers/pvr_alias/meson.build b/src/gallium/drivers/pvr_alias/meson.build
+index 128efd7..1d77004 100644
+--- a/src/gallium/drivers/pvr_alias/meson.build
++++ b/src/gallium/drivers/pvr_alias/meson.build
+@@ -19,5 +19,5 @@
+ # SOFTWARE.
+ 
+ driver_pvr_alias = declare_dependency(
+-  compile_args: '-DGALLIUM_PVR_ALIAS=@0@'.format(gallium_pvr_alias)
++  compile_args: '-DGALLIUM_PVR_ALIAS=@0@'.format(gallium_pvr_alias.replace('-', '_'))
+ )

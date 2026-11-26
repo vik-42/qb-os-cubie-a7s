@@ -1,0 +1,20 @@
+[submodule "yocto/poky"]
+	path = yocto/poky
+	url = https://git.yoctoproject.org/poky
+	branch = scarthgap
+[submodule "yocto/meta-openembedded"]
+	path = yocto/meta-openembedded
+	url = https://git.openembedded.org/meta-openembedded
+	branch = scarthgap
+[submodule "yocto/meta-ros"]
+	path = yocto/meta-ros
+	url = https://github.com/ros/meta-ros
+	branch = scarthgap
+[submodule "yocto/meta-clang"]
+	path = yocto/meta-clang
+	url = https://github.com/kraj/meta-clang.git
+	branch = scarthgap
+[submodule "yocto/meta-virtualization"]
+	path = yocto/meta-virtualization
+	url = https://git.yoctoproject.org/meta-virtualization
+	branch = scarthgap

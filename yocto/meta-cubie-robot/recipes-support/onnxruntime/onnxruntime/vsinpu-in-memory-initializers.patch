@@ -1,0 +1,91 @@
+vsinpu: accept initializers ort keeps in memory
+
+ort moves large initializers into memory and tags them as external data, so
+GetCapability rejected every real model and everything silently ran on the cpu.
+Only refuse data in an external file, and unpack weights with the
+location-aware UnpackTensor overload instead of reading raw_data directly.
+
+Upstream-Status: Pending
+
+--- a/onnxruntime/core/providers/vsinpu/builders/impl/dropout_op_builder.h
++++ b/onnxruntime/core/providers/vsinpu/builders/impl/dropout_op_builder.h
+@@ -39,9 +39,7 @@
+           initializers.at(node_unit.Inputs()[2].node_arg.Name());
+       std::vector<uint8_t> training_mode(1);
+       auto status = onnxruntime::utils::UnpackTensor(
+-          *tensor_proto,
+-          tensor_proto->has_raw_data() ? tensor_proto->raw_data().data() : nullptr,
+-          tensor_proto->has_raw_data() ? tensor_proto->raw_data().size() : 0,
++          *tensor_proto, std::filesystem::path(),
+           training_mode.data(), training_mode.size());
+       if (!status.IsOK()) {
+         LOGS_DEFAULT(ERROR) << "Failed to get data training mode tensor.";
+--- a/onnxruntime/core/providers/vsinpu/builders/impl/qlinearconv_op_builder.h
++++ b/onnxruntime/core/providers/vsinpu/builders/impl/qlinearconv_op_builder.h
+@@ -73,9 +73,7 @@
+       std::vector<int8_t> w_zp(tensor_proto->dims_size() == 0 ? 1 : tensor_proto->dims()[0]);
+ 
+       auto status = onnxruntime::utils::UnpackTensor(
+-          *tensor_proto,
+-          tensor_proto->has_raw_data() ? tensor_proto->raw_data().data() : nullptr,
+-          tensor_proto->has_raw_data() ? tensor_proto->raw_data().size() : 0,
++          *tensor_proto, std::filesystem::path(),
+           w_zp.data(), w_zp.size());
+       if (!status.IsOK()) {
+         LOGS_DEFAULT(ERROR) << "Failed to get data from weight zp tensor.";
+--- a/onnxruntime/core/providers/vsinpu/builders/impl/tensor_op_builder.h
++++ b/onnxruntime/core/providers/vsinpu/builders/impl/tensor_op_builder.h
+@@ -59,9 +59,7 @@
+     auto& perm_tensor_proto = *graph_viewer.GetConstantInitializer(input_defs[1]->Name(), true);
+     std::vector<int64_t> perm(perm_tensor_proto.dims()[0]);
+     auto status = onnxruntime::utils::UnpackTensor(
+-        perm_tensor_proto,
+-        perm_tensor_proto.has_raw_data() ? perm_tensor_proto.raw_data().data() : nullptr,
+-        perm_tensor_proto.has_raw_data() ? perm_tensor_proto.raw_data().size() : 0,
++        perm_tensor_proto, std::filesystem::path(),
+         perm.data(), perm.size());
+ 
+     // Check if perm has any 0's when allow zero is enabled.
+--- a/onnxruntime/core/providers/vsinpu/vsinpu_execution_provider.cc
++++ b/onnxruntime/core/providers/vsinpu/vsinpu_execution_provider.cc
+@@ -26,6 +26,7 @@
+ #include <unordered_set>
+ 
+ #include "core/framework/compute_capability.h"
++#include "core/framework/tensorprotoutils.h"
+ #include "core/providers/vsinpu/vsinpu_execution_provider.h"
+ #include "core/providers/vsinpu/vsinpu_ep_graph.h"
+ #include "core/providers/vsinpu/builders/op_builder.h"
+@@ -60,14 +61,11 @@
+   }
+ 
+   for (const auto& tensor : graph_viewer.GetAllInitializedTensors()) {
+-    if (tensor.second->has_data_location()) {
+-      LOGS(logger, VERBOSE) << "location:" << tensor.second->data_location();
+-      if (tensor.second->data_location() ==
+-          ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL) {
+-        LOGS(logger, WARNING) << "VSINPU: Initializers with external data location are not "
+-                                 "currently supported";
+-        return result;
+-      }
++    // ort keeps large initializers in memory tagged as external data, only data in a separate file is unsupported
++    if (utils::HasExternalDataInFile(*tensor.second)) {
++      LOGS(logger, WARNING) << "VSINPU: Initializers with external data in a file are not "
++                               "currently supported";
++      return result;
+     }
+   }
+   // Get all the NodeUnits in the graph_viewer
+--- a/onnxruntime/core/providers/vsinpu/vsinpu_util.cc
++++ b/onnxruntime/core/providers/vsinpu/vsinpu_util.cc
+@@ -196,9 +196,7 @@
+     unpackedTensor.reset(new uint8_t[tensorByteSize],                         \
+                          shared_array_deletor<uint8_t>());                    \
+     auto status = onnxruntime::utils::UnpackTensor(                           \
+-        initializer,                                                          \
+-        initializer.has_raw_data() ? initializer.raw_data().data() : nullptr, \
+-        initializer.has_raw_data() ? initializer.raw_data().size() : 0,       \
++        initializer, std::filesystem::path(),                                 \
+         reinterpret_cast<Y*>(unpackedTensor.get()), elementCount);            \
+     if (!status.IsOK()) {                                                     \
+       LOGS_DEFAULT(ERROR) << "Unpack tensor data failed.";                    \

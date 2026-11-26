@@ -1,0 +1,14 @@
+zenoh-c: build with panic=unwind
+
+zenoh-c sets panic = "abort" in its release profile, but yocto's libstd-rs is
+built for unwinding only, so linking fails.
+
+Upstream-Status: Inappropriate [yocto libstd-rs is unwind only]
+
+--- a/Cargo.toml.in	2026-11-12 03:06:49.758851713 +0100
++++ b/Cargo.toml.in	2026-11-12 03:06:49.760864514 +0100
+@@ -124,4 +124,3 @@
+ lto = "fat"
+ codegen-units = 1
+ opt-level = 3
+-panic = "abort"

@@ -1,0 +1,49 @@
+omxvideoenc: never propose input buffers smaller than a frame
+
+propose_allocation offered nBufferSize from the cached input port
+definition. Allwinner CedarC keeps its 176x144 default there after the
+real frame size is set (190080 bytes for 720p), so any upstream element
+with its own pool (videoconvert, videoscale...) failed with "Provided size
+is to small for the caps". Refresh the definition and propose at least
+the frame size.
+
+Upstream-Status: Pending
+
+---
+diff --git a/omx/gstomxvideoenc.c b/omx/gstomxvideoenc.c
+index 6dbfb41..b33abd7 100644
+--- a/omx/gstomxvideoenc.c
++++ b/omx/gstomxvideoenc.c
+@@ -3489,6 +3489,7 @@ gst_omx_video_enc_propose_allocation (GstVideoEncoder * encoder,
+   GstVideoInfo info;
+   GstBufferPool *pool = NULL;
+   GstStructure *params;
++  guint size;
+ 
+   gst_query_parse_allocation (query, &caps, NULL);
+ 
+@@ -3508,6 +3509,11 @@ gst_omx_video_enc_propose_allocation (GstVideoEncoder * encoder,
+ 
+   num_buffers = self->enc_in_port->port_def.nBufferCountMin + 1;
+ 
++  /* some components (allwinner cedarc) keep a stale nBufferSize after the
++   * frame size changed, upstream pools refuse anything smaller than a frame */
++  gst_omx_port_update_port_definition (self->enc_in_port, NULL);
++  size = MAX (self->enc_in_port->port_def.nBufferSize, info.size);
++
+ #ifdef USE_OMX_TARGET_ZYNQ_USCALE_PLUS
+   /* dmabuf export is currently only supported on Zynqultrascaleplus */
+   pool = create_input_pool (self, caps, num_buffers);
+@@ -3518,10 +3524,8 @@ gst_omx_video_enc_propose_allocation (GstVideoEncoder * encoder,
+ #endif
+ 
+   GST_DEBUG_OBJECT (self,
+-      "request at least %d buffers of size %d", num_buffers,
+-      (guint) self->enc_in_port->port_def.nBufferSize);
+-  gst_query_add_allocation_pool (query, pool,
+-      self->enc_in_port->port_def.nBufferSize, num_buffers, 0);
++      "request at least %d buffers of size %d", num_buffers, size);
++  gst_query_add_allocation_pool (query, pool, size, num_buffers, 0);
+ 
+   self->in_pool_used = FALSE;
+ 

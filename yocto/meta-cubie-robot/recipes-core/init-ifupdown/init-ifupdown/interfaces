@@ -1,0 +1,27 @@
+# /etc/network/interfaces, oe-core's default plus wlan0 up at boot
+
+auto lo
+iface lo inet loopback
+
+# wlan0 shows up a few seconds into boot once the aic8800 firmware is loaded, wait for it
+auto wlan0
+iface wlan0 inet dhcp
+	pre-up for i in $(seq 1 30); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
+	wpa-driver nl80211
+	wpa-conf /etc/wpa_supplicant.conf
+
+auto eth0
+iface eth0 inet dhcp
+iface eth1 inet dhcp
+
+# busybox ifupdown wont process /en* correctly
+auto /en*=eth
+iface eth inet dhcp
+
+iface usb0 inet static
+	address 192.168.7.2
+	netmask 255.255.255.0
+	network 192.168.7.0
+	gateway 192.168.7.1
+
+iface bnep0 inet dhcp

@@ -1,0 +1,193 @@
+Optionally keep component handles that never got input for reuse
+
+Allwinner CedarC's decoders crash in OMX_FreeHandle unless they decoded
+something: they only start their worker threads once stream data parsed,
+and the teardown joins them regardless. A decoder opened and closed
+without a frame (stream ends or errors first) took the whole process down.
+With the reuse-unstarted-component hack, a component that never got an
+input buffer and is back in Loaded is kept and handed to the next element
+opening the same component (rebound with SetCallbacks). One that got
+input but never produced anything can't be freed nor reused and is left
+alone. Anything that produced output is freed as usual.
+
+Upstream-Status: Inappropriate [vendor specific]
+
+---
+diff --git a/omx/gstomx.c b/omx/gstomx.c
+index 633aac8..13ddeca 100644
+--- a/omx/gstomx.c
++++ b/omx/gstomx.c
+@@ -645,6 +645,9 @@ EventHandler (OMX_HANDLETYPE hComponent, OMX_PTR pAppData, OMX_EVENTTYPE eEvent,
+ 
+   log_omx_api_trace_event (comp, eEvent, nData1, nData2, pEventData);
+ 
++  if (eEvent == OMX_EventPortSettingsChanged)
++    g_atomic_int_set (&comp->started, TRUE);
++
+   switch (eEvent) {
+     case OMX_EventCmdComplete:
+     {
+@@ -910,6 +913,9 @@ FillBufferDone (OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
+ 
+   comp = buf->port->comp;
+ 
++  if (pBuffer->nFilledLen > 0)
++    g_atomic_int_set (&comp->started, TRUE);
++
+   msg = g_slice_new (GstOMXMessage);
+   msg->type = GST_OMX_MESSAGE_BUFFER_DONE;
+   msg->content.buffer_done.component = hComponent;
+@@ -934,6 +940,42 @@ GST_DEFINE_MINI_OBJECT_TYPE (GstOMXComponent, gst_omx_component);
+ static void gst_omx_component_free (GstOMXComponent * comp);
+ 
+ /* NOTE: Uses comp->lock and comp->messages_lock */
++/* reuse-unstarted-component: "core\ncomponent" -> GQueue of idle handles,
++ * each holding a reference on its core */
++static GMutex unstarted_lock;
++static GHashTable *unstarted_handles;
++
++static OMX_HANDLETYPE
++gst_omx_take_unstarted_handle (const gchar * key)
++{
++  OMX_HANDLETYPE handle = NULL;
++  GQueue *queue;
++
++  g_mutex_lock (&unstarted_lock);
++  if (unstarted_handles
++      && (queue = g_hash_table_lookup (unstarted_handles, key)))
++    handle = g_queue_pop_head (queue);
++  g_mutex_unlock (&unstarted_lock);
++
++  return handle;
++}
++
++static void
++gst_omx_keep_unstarted_handle (const gchar * key, OMX_HANDLETYPE handle)
++{
++  GQueue *queue;
++
++  g_mutex_lock (&unstarted_lock);
++  if (!unstarted_handles)
++    unstarted_handles = g_hash_table_new (g_str_hash, g_str_equal);
++  if (!(queue = g_hash_table_lookup (unstarted_handles, key))) {
++    queue = g_queue_new ();
++    g_hash_table_insert (unstarted_handles, g_strdup (key), queue);
++  }
++  g_queue_push_tail (queue, handle);
++  g_mutex_unlock (&unstarted_lock);
++}
++
+ GstOMXComponent *
+ gst_omx_component_new (GstObject * parent, const gchar * core_name,
+     const gchar * component_name, const gchar * component_role, guint64 hacks)
+@@ -959,14 +1001,31 @@ gst_omx_component_new (GstObject * parent, const gchar * core_name,
+   else
+     comp->name = g_strdup (component_name);
+ 
+-  err =
+-      core->get_handle (&comp->handle, (OMX_STRING) component_name, comp,
+-      &callbacks);
++  if (hacks & GST_OMX_HACK_REUSE_UNSTARTED_COMPONENT) {
++    comp->reuse_key = g_strdup_printf ("%s\n%s", core_name, component_name);
++    comp->handle = gst_omx_take_unstarted_handle (comp->reuse_key);
++  }
++
++  if (comp->handle) {
++    err = ((OMX_COMPONENTTYPE *) comp->handle)->SetCallbacks (comp->handle,
++        &callbacks, comp);
++    GST_DEBUG_OBJECT (parent, "Reusing unstarted component handle %p: %s "
++        "(0x%08x)", comp->handle, gst_omx_error_to_string (err), err);
++    /* the kept handle brought its own core reference, on failure both the
++     * handle and that reference stay leaked */
++    if (err == OMX_ErrorNone)
++      gst_omx_core_release (core);
++  } else {
++    err =
++        core->get_handle (&comp->handle, (OMX_STRING) component_name, comp,
++        &callbacks);
++  }
+   if (err != OMX_ErrorNone) {
+     GST_ERROR_OBJECT (parent,
+         "Failed to get component handle '%s' from core '%s': 0x%08x",
+         component_name, core_name, err);
+     gst_omx_core_release (core);
++    g_free (comp->reuse_key);
+     g_free (comp->name);
+     g_slice_free (GstOMXComponent, comp);
+     return NULL;
+@@ -1045,8 +1104,25 @@ gst_omx_component_free (GstOMXComponent * comp)
+     comp->ports = NULL;
+   }
+ 
+-  comp->core->free_handle (comp->handle);
+-  gst_omx_core_release (comp->core);
++  if (comp->reuse_key && !g_atomic_int_get (&comp->started)) {
++    OMX_STATETYPE state = OMX_StateInvalid;
++
++    OMX_GetState (comp->handle, &state);
++    if (!g_atomic_int_get (&comp->fed) && state == OMX_StateLoaded) {
++      GST_DEBUG_OBJECT (comp->parent, "Keeping unstarted %s for reuse",
++          comp->name);
++      gst_omx_keep_unstarted_handle (comp->reuse_key, comp->handle);
++    } else {
++      /* got data it never decoded, can't be freed nor reused, the core
++       * stays loaded for its threads */
++      GST_WARNING_OBJECT (comp->parent, "Leaking %s, it never produced "
++          "anything and can't be freed", comp->name);
++    }
++  } else {
++    comp->core->free_handle (comp->handle);
++    gst_omx_core_release (comp->core);
++  }
++  g_free (comp->reuse_key);
+ 
+   gst_omx_component_flush_messages (comp);
+ 
+@@ -2345,6 +2421,7 @@ gst_omx_port_release_buffer (GstOMXPort * port, GstOMXBuffer * buf)
+ 
+   if (port->port_def.eDir == OMX_DirInput) {
+     log_omx_api_trace_buffer (comp, "EmptyThisBuffer", buf);
++    g_atomic_int_set (&comp->fed, TRUE);
+     err = OMX_EmptyThisBuffer (comp->handle, buf->omx_buf);
+   } else {
+     log_omx_api_trace_buffer (comp, "FillThisBuffer", buf);
+@@ -3848,6 +3925,8 @@ gst_omx_parse_hacks (gchar ** hacks)
+       hacks_flags |= GST_OMX_HACK_ENSURE_BUFFER_COUNT_ACTUAL;
+     else if (g_str_equal (*hacks, "cedarc-dmabuf-output"))
+       hacks_flags |= GST_OMX_HACK_CEDARC_DMABUF_OUTPUT;
++    else if (g_str_equal (*hacks, "reuse-unstarted-component"))
++      hacks_flags |= GST_OMX_HACK_REUSE_UNSTARTED_COMPONENT;
+     else
+       GST_WARNING ("Unknown hack: %s", *hacks);
+     hacks++;
+diff --git a/omx/gstomx.h b/omx/gstomx.h
+index e61c34d..abcbedc 100644
+--- a/omx/gstomx.h
++++ b/omx/gstomx.h
+@@ -214,6 +214,13 @@ G_BEGIN_DECLS
+  */
+ #define GST_OMX_HACK_CEDARC_DMABUF_OUTPUT                G_GUINT64_CONSTANT (0x0000000000004000)
+ 
++/* The component crashes in OMX_FreeHandle unless it decoded something
++ * (Allwinner CedarC joins worker threads it only starts on stream data).
++ * Keep handles that never got any input for the next element that opens
++ * the same component instead of freeing them.
++ */
++#define GST_OMX_HACK_REUSE_UNSTARTED_COMPONENT           G_GUINT64_CONSTANT (0x0000000000008000)
++
+ /* CedarC's output buffer descriptor (OmxPrivateBuffer) */
+ typedef struct {
+   guint64 id;
+@@ -374,6 +381,12 @@ struct _GstOMXComponent {
+ 
+   guint64 hacks; /* Flags, GST_OMX_HACK_* */
+ 
++  /* reuse-unstarted-component: "core\ncomponent", whether any input was
++   * sent and whether the component ever produced something */
++  gchar *reuse_key;
++  gint fed;
++  gint started;
++
+   /* Added once, never changed. No locks necessary */
+   GPtrArray *ports; /* Contains GstOMXPort* */
+   gint n_in_ports, n_out_ports;

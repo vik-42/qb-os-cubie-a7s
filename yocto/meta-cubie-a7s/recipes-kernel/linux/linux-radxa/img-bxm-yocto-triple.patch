@@ -1,0 +1,19 @@
+Accept any Yocto vendor triple for aarch64
+
+Yocto names its cross compiler aarch64-<distro vendor>-linux, only poky's
+was mapped to the aarch64-linux-gnu compiler config, so the build stops
+under any other distro.
+
+Upstream-Status: Pending
+
+--- a/bsp/modules/gpu/img-bxm/linux/rogue_km/build/linux/config/compiler.mk
++++ b/bsp/modules/gpu/img-bxm/linux/rogue_km/build/linux/config/compiler.mk
+@@ -65,7 +65,7 @@
+    ifneq ($$(filter i386-% i486-% i586-% i686-%,$$($(1)_compiler_preferred_target)),)
+     $(1)_compiler_preferred_target := i386-linux-gnu
+    endif
+-   ifneq ($$(filter aarch64-poky-linux arm64-%,$$($(1)_compiler_preferred_target)),)
++   ifneq ($$(filter aarch64-%-linux arm64-%,$$($(1)_compiler_preferred_target)),)
+     $(1)_compiler_preferred_target := aarch64-linux-gnu
+    endif
+    ifneq ($$(filter armv7a-cros-linux-gnueabi armv7a-cros-linux-gnueabihf,$$($(1)_compiler_preferred_target)),)

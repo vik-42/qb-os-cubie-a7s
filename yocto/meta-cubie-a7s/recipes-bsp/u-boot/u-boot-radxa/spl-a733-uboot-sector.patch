@@ -1,0 +1,24 @@
+spl: sunxi: A733: load U-Boot proper from where binman puts it
+
+binman places U-Boot proper (the FIT) at a fixed 0x4a000 after the SPL
+on the A733 (min-size in sunxi-u-boot.dtsi, whose comment says it
+matches SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR). That sector was left at the
+generic sunxi 0x40, so the SPL falls back to its own eGON length,
+which is rounded up to 8 KiB: it reads U-Boot proper from 0x4a000 only
+while the SPL is a bit larger than 0x48000. A smaller SPL reads 0xff
+padding at 0x48000 and stops after "Trying to boot from MMC1".
+
+Use 0x250 sectors (0x4a000) on the A733, the offset binman uses.
+
+Upstream-Status: Pending
+
+--- a/common/spl/Kconfig
++++ b/common/spl/Kconfig
+@@ -582,6 +582,7 @@
+ config SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR
+ 	hex "Address on the MMC to load U-Boot from"
+ 	depends on SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR
++	default 0x250 if MACH_SUN60I_A733
+ 	default 0x40 if ARCH_SUNXI
+ 	default 0x75 if ARCH_DAVINCI
+ 	default 0x8a if ARCH_MX6 || ARCH_MX7

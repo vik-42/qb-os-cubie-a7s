@@ -1,0 +1,59 @@
+Balance the pwm supply enables per channel
+
+sunxi_pwm_disable is also the .free callback, so a channel that was already
+disabled gets disabled again on unexport. The old check asked whether the rail
+is on, which is true for a dummy or shared supply, and the second
+regulator_disable() hits the unbalanced-disables WARN. Track the channel's own
+enable instead.
+
+Upstream-Status: Pending
+
+--- a/bsp/drivers/pwm/pwm-sunxi.c	2026-11-12 01:18:58.368462980 +0100
++++ b/bsp/drivers/pwm/pwm-sunxi.c	2026-11-12 01:18:58.378117429 +0100
+@@ -161,6 +161,7 @@
+ 	struct clk *hosc;
+ 	struct reset_control *reset;
+ 	struct regulator *regulator[PWM_NUM_MAX];
++	bool regulator_on[PWM_NUM_MAX]; /* this channel holds an enable on its supply */
+ 	unsigned int group_ch;
+ 	unsigned int group_polarity;
+ 	unsigned int group_period;
+@@ -487,6 +488,9 @@
+ 		if (!chip->regulator[i])
+ 			continue;
+ 
++		if (chip->regulator_on[i])
++			regulator_disable(chip->regulator[i]);
++		chip->regulator_on[i] = false;
+ 		regulator_put(chip->regulator[i]);
+ 		chip->regulator[i] = NULL;
+ 	}
+@@ -496,13 +500,14 @@
+ 
+ static int sunxi_pwm_regulator_enable(struct sunxi_pwm_chip *chip, int index)
+ {
+-	if (!chip->regulator[index])
++	if (!chip->regulator[index] || chip->regulator_on[index])
+ 		return 0;
+ 
+ 	if (regulator_enable(chip->regulator[index])) {
+ 		sunxi_err(chip->pwm_chip.dev, "enable regulator failed!\n");
+ 		return -EINVAL;
+ 	}
++	chip->regulator_on[index] = true;
+ 
+ 	return 0;
+ }
+@@ -512,8 +517,11 @@
+ 	if (!chip->regulator[index])
+ 		return 0;
+ 
+-	if (regulator_is_enabled(chip->regulator[index]))
++	/* the rail can be on for others (or be a dummy), only drop our own enable, .free disables again */
++	if (chip->regulator_on[index]) {
+ 		regulator_disable(chip->regulator[index]);
++		chip->regulator_on[index] = false;
++	}
+ 
+ 	return 0;
+ }

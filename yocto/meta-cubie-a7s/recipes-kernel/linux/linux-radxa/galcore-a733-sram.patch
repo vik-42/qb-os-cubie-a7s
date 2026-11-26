@@ -1,0 +1,28 @@
+galcore: route the sram to the npu on a733
+
+vipcore clears SRAM_CTRL_REG2 bit 1 at probe, galcore never did, so the npu
+hung on every job (core0 hang) unless vipcore had run first.
+
+Upstream-Status: Pending
+
+--- a/bsp/drivers/npu/aw_nna_galcore/os/linux/kernel/platform/allwinner/gc_hal_kernel_platform_allwinner.c
++++ b/bsp/drivers/npu/aw_nna_galcore/os/linux/kernel/platform/allwinner/gc_hal_kernel_platform_allwinner.c
+@@ -416,6 +416,18 @@
+ 		return -EBUSY;
+ 	}
+ 
++#if IS_ENABLED(CONFIG_ARCH_SUN60IW2)
++	/* hand the sram to the npu like vipcore does (SRAM_CTRL_REG2 bit 1), it hangs otherwise */
++	{
++		void __iomem *sysctrl = ioremap(0x03000000, 0x100);
++
++		if (sysctrl) {
++			writel(readl(sysctrl + 0x08) & ~BIT(1), sysctrl + 0x08);
++			iounmap(sysctrl);
++		}
++	}
++#endif
++
+ 	/* Set NPU CLK */
+ 	if (mod_clk) {
+ 		if (!IS_ERR_OR_NULL(aw_driver.pclk)) {

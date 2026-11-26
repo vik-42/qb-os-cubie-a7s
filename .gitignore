@@ -1,0 +1,15 @@
+# Downloaded / cloned material, reproducible from notes, not worth tracking
+# Layers (poky, meta-openembedded, meta-ros, meta-clang) are git submodules.
+/images/
+yocto/meta-arm/
+yocto/build/*
+!yocto/build/conf/
+yocto/build/conf/*
+!yocto/build/conf/local.conf
+!yocto/build/conf/bblayers.conf
+
+# local documents: built PDFs, reference manuals, never published
+/docs-local/
+
+# local Claude Code settings, never published
+/.claude/

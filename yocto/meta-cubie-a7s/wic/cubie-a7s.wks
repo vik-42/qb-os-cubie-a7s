@@ -1,0 +1,11 @@
+# u-boot goes raw at 128K before the first partition, same offset radxa's flasher uses
+part --source rawcopy --sourceparams="file=u-boot-sunxi-with-spl.bin" --ondisk mmcblk0 --no-table --offset 128
+
+# kernel + dtb, loader=u-boot makes wic write extlinux.conf
+part /boot --source bootimg-partition --sourceparams="loader=u-boot" --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4 --size 64
+
+# rootfs
+part / --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root --align 4
+
+# uboot replaces the dtb bootargs with this, ttyAS0 is the vendor uart, nolpi skips the ITS that hangs boot
+bootloader --ptable gpt --append="console=ttyAS0,115200 irqchip.gicv3_nolpi=1"

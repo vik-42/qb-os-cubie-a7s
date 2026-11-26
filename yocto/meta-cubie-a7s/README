@@ -1,0 +1,83 @@
+meta-cubie-a7s
+==============
+
+Yocto (scarthgap) BSP layer for the Radxa Cubie A7S (Allwinner A733).
+
+Kernel, U-Boot, ARISC/SCP firmware, onboard wifi/bt (AIC8800D80 over USB)
+and SD card layout. Builds from Radxa's own sources, pinned. The closed binaries
+the board needs (BL31, DRAM init, SCP, wifi firmware, GPU, NPU and video libraries)
+are downloaded by the build, never stored here; the top-level README lists each one
+with its maker and where it comes from.
+
+Unofficial community project, not made, endorsed or supported by Radxa,
+Allwinner, Imagination Technologies, VeriSilicon, the Yocto Project or any
+other company or project whose software it builds.
+
+
+Dependencies
+------------
+
+Required:
+
+  URI: https://git.yoctoproject.org/poky
+  branch: scarthgap
+  layers: meta
+
+Optional, adds the header tools (gpiod tools, Python gpiod/periphery/smbus2/spidev,
+dynamic-layers/openembedded-layer):
+
+  URI: https://git.openembedded.org/meta-openembedded
+  branch: scarthgap
+  layers: meta-oe, plus meta-python for the Python libraries
+
+Build host: x86_64 only (the SCP firmware uses Radxa's prebuilt RISC-V toolchain).
+
+The images, the QB OS distro, ROS 2 and ONNX Runtime live in meta-cubie-robot,
+which sits on top of this layer.
+
+
+Using it
+--------
+
+Set MACHINE = "cubie-a7s". The board's drivers, firmware and userspace (wifi,
+NPU, video engines, GPU, cooling, header tools) are in MACHINE_EXTRA_RRECOMMENDS,
+pull them into your image (packagegroup-base does, core-image-minimal doesn't).
+
+gst-omx (hardware video) is flagged commercial, your distro or local.conf needs
+LICENSE_FLAGS_ACCEPTED += "commercial_gstreamer1.0-omx" to build it.
+
+Options, in local.conf or site.conf:
+
+  CUBIE_WIFI_COUNTRY  wifi country, ISO code like "IT" (default "00", the world rules)
+  CUBIE_COOLING       "passive" (default, bare board or heatsink) or "fan"
+  CUBIE_HEADER        header functions merged into the device tree at build time,
+                      e.g. "pwm1-1 twi2 uart2" (default: none, every pin is a GPIO)
+
+The top-level README of the repo has the details and the list of header functions.
+
+Write the .wic from tmp/deploy/images/cubie-a7s/ to an SD card:
+
+  sudo dd if=<image>.wic of=/dev/mmcblkX bs=4M status=progress conv=fsync
+
+Serial console is on the 30 pin header (pin 8 TX, pin 10 RX, pin 6 GND),
+115200 8N1, shows up as ttyAS0 on the board.
+
+
+Wifi
+----
+
+The meta-cubie-robot images connect at boot from WIFI_SSID/WIFI_PSK. By hand:
+
+  ip link set wlan0 up
+  wpa_passphrase "SSID" "password" > /etc/wpa_supplicant.conf
+  wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211
+  udhcpc -i wlan0
+
+Only run one wpa_supplicant, a second one makes association fail
+("Match already configured").
+
+
+Maintainer
+----------
+
+Vittorio Passaretti <vittoriopt@yahoo.it>

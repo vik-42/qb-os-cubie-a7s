@@ -1,0 +1,75 @@
+Handle YV12 and NV21 output from cedarc's decoders
+
+CedarC's video decoders only offer OMX_COLOR_FormatYVU420Planar (YV12) on the
+output port, so negotiation hit g_assert (l != NULL). Map the vendor formats
+and give them the same plane layout as I420/NV12; GStreamer's YV12 plane order
+already puts V before U.
+
+Upstream-Status: Inappropriate [vendor specific]
+
+---
+diff -ru a/omx/gstomxbufferpool.c b/omx/gstomxbufferpool.c
+--- a/omx/gstomxbufferpool.c	2026-11-10 03:37:54.458606482 +0100
++++ b/omx/gstomxbufferpool.c	2026-11-10 03:37:54.473365250 +0100
+@@ -361,12 +361,14 @@
+       case GST_VIDEO_FORMAT_GRAY8:
+         break;
+       case GST_VIDEO_FORMAT_I420:
++      case GST_VIDEO_FORMAT_YV12:
+         stride[1] = nstride / 2;
+         offset[1] = offset[0] + stride[0] * nslice;
+         stride[2] = nstride / 2;
+         offset[2] = offset[1] + (stride[1] * nslice / 2);
+         break;
+       case GST_VIDEO_FORMAT_NV12:
++      case GST_VIDEO_FORMAT_NV21:
+       case GST_VIDEO_FORMAT_NV12_10LE32:
+       case GST_VIDEO_FORMAT_NV16:
+       case GST_VIDEO_FORMAT_NV16_10LE32:
+diff -ru a/omx/gstomxvideo.c b/omx/gstomxvideo.c
+--- a/omx/gstomxvideo.c	2026-11-10 03:37:54.453174772 +0100
++++ b/omx/gstomxvideo.c	2026-11-10 03:37:54.467180758 +0100
+@@ -51,6 +51,12 @@
+     case OMX_COLOR_FormatYUV420PackedSemiPlanar:
+       format = GST_VIDEO_FORMAT_NV12;
+       break;
++    case OMX_COLOR_FormatYVU420Planar:
++      format = GST_VIDEO_FORMAT_YV12;
++      break;
++    case OMX_COLOR_FormatYVU420SemiPlanar:
++      format = GST_VIDEO_FORMAT_NV21;
++      break;
+     case OMX_COLOR_FormatYUV422SemiPlanar:
+       format = GST_VIDEO_FORMAT_NV16;
+       break;
+diff -ru a/omx/gstomxvideodec.c b/omx/gstomxvideodec.c
+--- a/omx/gstomxvideodec.c	2026-11-10 03:37:54.456941820 +0100
++++ b/omx/gstomxvideodec.c	2026-11-10 03:37:54.473870203 +0100
+@@ -598,6 +598,7 @@
+         dst_width[0] = GST_VIDEO_INFO_WIDTH (vinfo);
+         break;
+       case GST_VIDEO_FORMAT_I420:
++      case GST_VIDEO_FORMAT_YV12:
+         dst_width[0] = GST_VIDEO_INFO_WIDTH (vinfo);
+         src_stride[1] = nstride / 2;
+         src_size[1] = (src_stride[1] * nslice) / 2;
+@@ -609,6 +610,7 @@
+         dst_height[2] = GST_VIDEO_INFO_FIELD_HEIGHT (vinfo) / 2;
+         break;
+       case GST_VIDEO_FORMAT_NV12:
++      case GST_VIDEO_FORMAT_NV21:
+         dst_width[0] = GST_VIDEO_INFO_WIDTH (vinfo);
+         src_stride[1] = nstride;
+         src_size[1] = src_stride[1] * nslice / 2;
+diff -ru a/omx/gstomxvideo.h b/omx/gstomxvideo.h
+--- a/omx/gstomxvideo.h	2026-11-10 03:37:54.455298180 +0100
++++ b/omx/gstomxvideo.h	2026-11-10 03:37:54.467215238 +0100
+@@ -36,7 +36,7 @@
+ 
+ /* Keep synced with gst_omx_video_get_format_from_omx(). Sort by decreasing quality */
+ #define GST_OMX_VIDEO_DEC_SUPPORTED_FORMATS "{ NV16_10LE32, NV12_10LE32, " \
+-  "NV16, YUY2, YVYU, UYVY, NV12, I420, RGB16, BGR16, ABGR, ARGB, GRAY8 }"
++  "NV16, YUY2, YVYU, UYVY, NV12, NV21, I420, YV12, RGB16, BGR16, ABGR, ARGB, GRAY8 }"
+ 
+ #define GST_OMX_VIDEO_ENC_SUPPORTED_FORMATS "{ NV16_10LE32, NV12_10LE32, " \
+   "NV16, NV12, I420, GRAY8 }"

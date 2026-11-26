@@ -1,0 +1,64 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          rootfs-grow
+# Required-Start:    checkroot
+# Default-Start:     S
+# Short-Description: grow the root partition and filesystem to fill the disk, first boot only
+### END INIT INFO
+
+# the image only holds what it needs, this grows the root partition to the end of the card
+# once and then removes its own start link. it only touches the partition if it is the last one.
+
+[ "$1" = "start" ] || exit 0
+
+say() { echo "rootfs-grow: $*"; }
+
+# done for good, drop our start link so this never runs again
+finish() {
+	rm -f /etc/rcS.d/S*rootfs-grow
+	exit 0
+}
+
+# which partition holds / (major:minor from mountinfo, the rest from sysfs)
+majmin=$(awk '$5 == "/" { print $3; exit }' /proc/self/mountinfo)
+part_sys=$(readlink -f /sys/dev/block/$majmin)
+if [ ! -f "$part_sys/partition" ]; then
+	say "/ is not on a partition, nothing to do"
+	finish
+fi
+partnum=$(cat "$part_sys/partition")
+disk_sys=$(dirname "$part_sys")
+disk=/dev/$(basename "$disk_sys")
+part=/dev/$(basename "$part_sys")
+
+# only grow the last partition, anything after it would be overwritten
+end=$(( $(cat "$part_sys/start") + $(cat "$part_sys/size") ))
+for p in "$disk_sys"/*/partition; do
+	other=$(dirname "$p")
+	if [ "$(cat "$other/start")" -ge "$end" ]; then
+		say "$part is not the last partition on $disk, leaving it alone"
+		finish
+	fi
+done
+
+# less than 64MiB to gain (sizes are in 512 byte sectors) means it already fills the disk
+free=$(( $(cat "$disk_sys/size") - end ))
+if [ "$free" -lt 131072 ]; then
+	finish
+fi
+
+say "growing $part to fill $disk"
+# a gpt image written to a bigger card has its backup table in the middle, move it to the end first.
+# (fails harmlessly on an mbr disk, which has no backup table)
+sfdisk --relocate gpt-bak-std "$disk" 2>/dev/null
+
+# ", +" keeps the start and takes all the space after it. --no-reread because the disk is in use
+# (we're running from it), partx then tells the kernel the new size and resize2fs grows the mounted fs
+if echo ", +" | sfdisk --no-reread --no-tell-kernel -q -N "$partnum" "$disk" &&
+   partx -u --nr "$partnum" "$disk" &&
+   resize2fs "$part"; then
+	say "done, $(df -h / | awk 'NR == 2 { print $2 }') on /"
+	finish
+fi
+say "failed, will try again next boot"
+exit 1

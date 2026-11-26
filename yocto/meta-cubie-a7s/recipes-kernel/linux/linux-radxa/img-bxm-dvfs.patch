@@ -1,0 +1,23 @@
+img-bxm: enable gpu dvfs
+
+The sunxi build file only turns DVFS on when CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND
+is 1, kconfig sets it to y so it never is. From radxa-pkg/aw-drivers-dkms.
+
+Upstream-Status: Inappropriate [vendor specific]
+
+---
+diff --git a/bsp/modules/gpu/img-bxm/linux/rogue_km/build/linux/sunxi_linux/Makefile b/bsp/modules/gpu/img-bxm/linux/rogue_km/build/linux/sunxi_linux/Makefile
+index b79c4acf..86e16139 100644
+--- a/bsp/modules/gpu/img-bxm/linux/rogue_km/build/linux/sunxi_linux/Makefile
++++ b/bsp/modules/gpu/img-bxm/linux/rogue_km/build/linux/sunxi_linux/Makefile
+@@ -100,9 +100,7 @@ PVR_LDM_PLATFORM_PRE_REGISTERED := 1
+ 
+ PVRSRV_NEED_PVR_DPF := 1
+ 
+-ifeq ($(CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND),1)
+-SUPPORT_LINUX_DVFS ?= 1
+-endif
++SUPPORT_LINUX_DVFS := 1
+ 
+ # Should be last
+ include ../config/core.mk

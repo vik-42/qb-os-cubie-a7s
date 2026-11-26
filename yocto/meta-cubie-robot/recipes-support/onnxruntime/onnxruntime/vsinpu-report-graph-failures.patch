@@ -1,0 +1,28 @@
+vsinpu: fail loudly when the npu graph fails
+
+A graph that failed to verify or run only logged an error and returned
+Status::OK, so the session handed back whatever was in the output buffers
+(zeros) as if it were a result. Return EP_FAIL instead.
+
+Upstream-Status: Pending
+
+--- a/onnxruntime/core/providers/vsinpu/vsinpu_execution_provider.cc
++++ b/onnxruntime/core/providers/vsinpu/vsinpu_execution_provider.cc
+@@ -182,7 +182,7 @@
+   }
+ 
+   if (!graph_ep->GetGraph()->Run()) {
+-    LOGS(logger, ERROR) << "Failed to run graph.";
++    return ORT_MAKE_STATUS(ONNXRUNTIME, EP_FAIL, "VSINPU: failed to run graph");
+   }
+   for (size_t i = 0; i < ctx.GetOutputCount(); i++) {
+     auto timvx_tensor = graph_ep->GetGraphOutputs()[i]->tensor;
+@@ -235,7 +235,7 @@
+     LOGS(logger, INFO) << "Verifying graph";
+     graph_ep->GetCompiled() = graph_ep->GetGraph()->Compile();
+     if (!graph_ep->GetCompiled()) {
+-      LOGS(logger, ERROR) << "Failed to verify graph.";
++      return ORT_MAKE_STATUS(ONNXRUNTIME, EP_FAIL, "VSINPU: failed to verify graph");
+     } else {
+       LOGS(logger, INFO) << "Graph has been verified successfully.";
+     }

@@ -1,0 +1,112 @@
+Add cedarc's codec and color extensions to the bundled OpenMAX headers
+
+CedarC (Allwinner A733) is built against Khronos 1.1.2 headers (64-bit OMX_U32)
+plus the Android codec extensions: VP8=9, VP9=10, HEVC=11 and
+OMX_IndexParamVideoHevc at OMX_IndexExtVideoStartUnused + 8, and its
+vendor color formats NV21/YV12 right after OMX_COLOR_FormatVendorStartUnused.
+Without the codings gst-omx skips omxh265dec, omxh265enc and omxvp8dec.
+Values checked against the cedarc blobs and Radxa's own gst-omx build.
+
+Upstream-Status: Inappropriate [vendor specific]
+
+---
+diff -ru a/omx/openmax/OMX_IndexExt.h b/omx/openmax/OMX_IndexExt.h
+--- a/omx/openmax/OMX_IndexExt.h	2026-11-10 03:35:05.611937953 +0100
++++ b/omx/openmax/OMX_IndexExt.h	2026-11-10 03:35:16.412903706 +0100
+@@ -66,6 +66,7 @@
+     OMX_IndexParamNalStreamFormatSupported,         /**< reference: OMX_NALSTREAMFORMATTYPE */
+     OMX_IndexParamNalStreamFormat,                  /**< reference: OMX_NALSTREAMFORMATTYPE */
+     OMX_IndexParamNalStreamFormatSelect,            /**< reference: OMX_NALSTREAMFORMATTYPE */
++    OMX_IndexParamVideoHevc = OMX_IndexExtVideoStartUnused + 8, /**< reference: OMX_VIDEO_PARAM_HEVCTYPE */
+ 
+     /* Image & Video common configurations */
+     OMX_IndexExtCommonStartUnused = OMX_IndexKhronosExtensions + 0x00700000,
+diff -ru a/omx/openmax/OMX_VideoExt.h b/omx/openmax/OMX_VideoExt.h
+--- a/omx/openmax/OMX_VideoExt.h	2026-11-10 03:35:05.609978974 +0100
++++ b/omx/openmax/OMX_VideoExt.h	2026-11-10 03:35:16.412961363 +0100
+@@ -61,6 +61,61 @@
+ 
+ 
+ 
++/** HEVC Profile enum type */
++typedef enum OMX_VIDEO_HEVCPROFILETYPE {
++    OMX_VIDEO_HEVCProfileUnknown      = 0x0,
++    OMX_VIDEO_HEVCProfileMain         = 0x1,
++    OMX_VIDEO_HEVCProfileMain10       = 0x2,
++    // Main10 profile with HDR SEI support.
++    OMX_VIDEO_HEVCProfileMain10HDR10  = 0x1000,
++    OMX_VIDEO_HEVCProfileMax          = 0x7FFFFFFF
++} OMX_VIDEO_HEVCPROFILETYPE;
++
++/** HEVC Level enum type */
++typedef enum OMX_VIDEO_HEVCLEVELTYPE {
++    OMX_VIDEO_HEVCLevelUnknown    = 0x0,
++    OMX_VIDEO_HEVCMainTierLevel1  = 0x1,
++    OMX_VIDEO_HEVCHighTierLevel1  = 0x2,
++    OMX_VIDEO_HEVCMainTierLevel2  = 0x4,
++    OMX_VIDEO_HEVCHighTierLevel2  = 0x8,
++    OMX_VIDEO_HEVCMainTierLevel21 = 0x10,
++    OMX_VIDEO_HEVCHighTierLevel21 = 0x20,
++    OMX_VIDEO_HEVCMainTierLevel3  = 0x40,
++    OMX_VIDEO_HEVCHighTierLevel3  = 0x80,
++    OMX_VIDEO_HEVCMainTierLevel31 = 0x100,
++    OMX_VIDEO_HEVCHighTierLevel31 = 0x200,
++    OMX_VIDEO_HEVCMainTierLevel4  = 0x400,
++    OMX_VIDEO_HEVCHighTierLevel4  = 0x800,
++    OMX_VIDEO_HEVCMainTierLevel41 = 0x1000,
++    OMX_VIDEO_HEVCHighTierLevel41 = 0x2000,
++    OMX_VIDEO_HEVCMainTierLevel5  = 0x4000,
++    OMX_VIDEO_HEVCHighTierLevel5  = 0x8000,
++    OMX_VIDEO_HEVCMainTierLevel51 = 0x10000,
++    OMX_VIDEO_HEVCHighTierLevel51 = 0x20000,
++    OMX_VIDEO_HEVCMainTierLevel52 = 0x40000,
++    OMX_VIDEO_HEVCHighTierLevel52 = 0x80000,
++    OMX_VIDEO_HEVCMainTierLevel6  = 0x100000,
++    OMX_VIDEO_HEVCHighTierLevel6  = 0x200000,
++    OMX_VIDEO_HEVCMainTierLevel61 = 0x400000,
++    OMX_VIDEO_HEVCHighTierLevel61 = 0x800000,
++    OMX_VIDEO_HEVCMainTierLevel62 = 0x1000000,
++    OMX_VIDEO_HEVCHighTierLevel62 = 0x2000000,
++    OMX_VIDEO_HEVCHighTiermax     = 0x7FFFFFFF
++} OMX_VIDEO_HEVCLEVELTYPE;
++
++/** Structure for controlling HEVC video encoding */
++typedef struct OMX_VIDEO_PARAM_HEVCTYPE {
++    OMX_U32 nSize;
++    OMX_VERSIONTYPE nVersion;
++    OMX_U32 nPortIndex;
++    OMX_VIDEO_HEVCPROFILETYPE eProfile;
++    OMX_VIDEO_HEVCLEVELTYPE eLevel;
++    OMX_U32 nKeyFrameInterval;        // distance between consecutive I-frames (including one
++                                      // of the I frames). 0 means interval is unspecified and
++                                      // can be freely chosen by the codec. 1 means a stream of
++                                      // only I frames.
++} OMX_VIDEO_PARAM_HEVCTYPE;
++
+ #ifdef __cplusplus
+ }
+ #endif /* __cplusplus */
+diff -ru a/omx/openmax/OMX_Video.h b/omx/openmax/OMX_Video.h
+--- a/omx/openmax/OMX_Video.h	2026-11-10 03:35:05.607658415 +0100
++++ b/omx/openmax/OMX_Video.h	2026-11-10 03:35:16.412807090 +0100
+@@ -68,6 +68,9 @@
+     OMX_VIDEO_CodingRV,         /**< all versions of Real Video */
+     OMX_VIDEO_CodingAVC,        /**< H.264/AVC */
+     OMX_VIDEO_CodingMJPEG,      /**< Motion JPEG */
++    OMX_VIDEO_CodingVP8,        /**< Google VP8, formerly known as On2 VP8 */
++    OMX_VIDEO_CodingVP9,        /**< Google VP9 */
++    OMX_VIDEO_CodingHEVC,       /**< ITU H.265/HEVC */
+     OMX_VIDEO_CodingKhronosExtensions = 0x6F000000, /**< Reserved region for introducing Khronos Standard Extensions */ 
+     OMX_VIDEO_CodingVendorStartUnused = 0x7F000000, /**< Reserved region for introducing Vendor Extensions */
+     OMX_VIDEO_CodingMax = 0x7FFFFFFF
+--- a/omx/openmax/OMX_IVCommon.h	2026-11-10 03:37:54.450657091 +0100
++++ b/omx/openmax/OMX_IVCommon.h	2026-11-10 03:37:54.467076051 +0100
+@@ -132,6 +132,8 @@
+     OMX_COLOR_Format24BitABGR6666,
+     OMX_COLOR_FormatKhronosExtensions = 0x6F000000, /**< Reserved region for introducing Khronos Standard Extensions */ 
+     OMX_COLOR_FormatVendorStartUnused = 0x7F000000, /**< Reserved region for introducing Vendor Extensions */
++    OMX_COLOR_FormatYVU420SemiPlanar,   /**< cedarc: NV21 */
++    OMX_COLOR_FormatYVU420Planar,       /**< cedarc: YV12 */
+     OMX_COLOR_FormatMax = 0x7FFFFFFF
+ } OMX_COLOR_FORMATTYPE;
+ 

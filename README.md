@@ -25,6 +25,29 @@ Dev images have no root password, so keep them on your desk and never ship them.
 > software it builds. Product and project names belong to their owners and are used only to say
 > what hardware and software this works with.
 
+## Prebuilt images
+
+Each [release](https://github.com/vik-42/qb-os-cubie-a7s/releases) has `cubie-a7s-image` and
+`cubie-a7s-image-base` ready to flash. Unpack the one you want with `xz -d`, then [flash](#flash) it.
+
+These images have no wifi and no SSH key in them, so the first setup is done on the
+[serial console](#serial-console). Log in as `root` with the password `qbos`, the board then asks you
+to pick a new one. Join your wifi, it's remembered across reboots:
+
+```
+wpa_passphrase "SSID" "password" > /etc/wpa_supplicant.conf
+ifup wlan0
+```
+
+SSH only takes keys. Add yours, then `ssh root@<address>` from your computer (`ip addr show wlan0`
+prints the address):
+
+```
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo "<contents of your ~/.ssh/id_ed25519.pub>" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
 ## Build
 
 These instructions are for Linux. What to install first: [docs/linux.md](docs/linux.md). On a Mac or a
@@ -182,6 +205,9 @@ WIFI_PSK = "password"
 # login for release images, the build refuses to make one with neither
 CUBIE_SSH_AUTHORIZED_KEYS = "/home/you/.ssh/id_ed25519.pub"
 CUBIE_ROOT_PASSWORD_HASH = "<output of: openssl passwd -6>"
+
+# optional, root has to pick a new password at the first login (the prebuilt images use this)
+CUBIE_ROOT_PASSWORD_EXPIRED = "1"
 
 # wifi country (ISO code), where the board runs. default "00", the world rules
 CUBIE_WIFI_COUNTRY = "IT"

@@ -51,6 +51,7 @@ cubie_quiet_console() {
 }
 
 # login from site.conf: CUBIE_SSH_AUTHORIZED_KEYS = path to a public key file, CUBIE_ROOT_PASSWORD_HASH = output of `openssl passwd -6`
+# CUBIE_ROOT_PASSWORD_EXPIRED = "1" makes root pick a new password at the first login
 ROOTFS_POSTPROCESS_COMMAND += "cubie_login;"
 do_rootfs[file-checksums] += "${@'%s:True' % d.getVar('CUBIE_SSH_AUTHORIZED_KEYS') if d.getVar('CUBIE_SSH_AUTHORIZED_KEYS') else ''}"
 python cubie_login() {
@@ -81,13 +82,24 @@ python cubie_login() {
     if not keyfile and not pwhash:
         bb.fatal('release image with no way to log in: set CUBIE_SSH_AUTHORIZED_KEYS and/or CUBIE_ROOT_PASSWORD_HASH in site.conf')
 
+    expired = d.getVar('CUBIE_ROOT_PASSWORD_EXPIRED') == '1'
+    if expired and not pwhash:
+        bb.fatal('CUBIE_ROOT_PASSWORD_EXPIRED needs CUBIE_ROOT_PASSWORD_HASH')
+
     if pwhash:
         if not re.match(r'^\$[0-9a-z]+\$', pwhash):
             bb.fatal('CUBIE_ROOT_PASSWORD_HASH must be a crypt hash, e.g. from `openssl passwd -6`')
         shadow = os.path.join(rootfs, 'etc/shadow')
         with open(shadow) as f:
             lines = f.read().splitlines()
-        lines = [':'.join([l.split(':')[0], pwhash] + l.split(':')[2:]) if l.startswith('root:') else l for l in lines]
+        for i, l in enumerate(lines):
+            if l.startswith('root:'):
+                fields = l.split(':')
+                fields[1] = pwhash
+                # last change on day 0 makes login ask for a new password first
+                if expired:
+                    fields[2] = '0'
+                lines[i] = ':'.join(fields)
         with open(shadow, 'w') as f:
             f.write('\n'.join(lines) + '\n')
 
